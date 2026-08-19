@@ -669,6 +669,7 @@ function recordCommandAnalyzerTrace(
 ): void {
   const rule = {
     git: 'git:analyzeGitMatch',
+    acli: 'analyzer/acli.ts:analyzeAcliMatch',
     rm: 'analyzer/rm.ts:analyzeRmMatch',
     find: 'analyzer/find.ts:analyzeFindMatch',
     xargs: 'analyzer/xargs.ts:analyzeXargs',
