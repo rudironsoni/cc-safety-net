@@ -40,19 +40,6 @@ export const AWK_EXECUTABLE_SOURCE_SELECTORS: readonly AwkExecutableSourceSelect
 export const REASON_AWK_SYSTEM_DYNAMIC =
   'Detected awk system(), pipe, or getline command with dynamic command that cannot be safely analyzed. Use a literal command or process the data without system(), pipes, or getline.';
 
-/** @internal */
-export function analyzeAwkSystemCalls(
-  tokens: readonly string[],
-  analyzeNested: (command: string) => string | null,
-): string | null {
-  return (
-    analyzeAwkSystemCallMatch(tokens, (command) => {
-      const reason = analyzeNested(command);
-      return reason ? { id: '', reason, intent: 'manual_only' } : null;
-    })?.reason ?? null
-  );
-}
-
 export function analyzeAwkSystemCallMatch(
   tokens: readonly string[],
   analyzeNested: (command: string) => DestructiveCommandRuleMatch | null,

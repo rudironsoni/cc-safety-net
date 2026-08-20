@@ -70,12 +70,18 @@ def _terminal_cwd(task_id, process_cwd):
     \`workdir or get_session_cwd(session_key) or default_cwd\`, and that record is rewritten
     after every completed command, so it IS the session's \`cd\` state. The session key is
     derived exactly as terminal_tool derives it: the contextvar when set, the raw task_id
-    otherwise. No record yet (first command of a session) means the process directory.
+    otherwise. No record yet (first command of a session) means \`default_cwd\`, which the local
+    terminal backend reads from \`TERMINAL_CWD\` (\`hermes_cli/config.py\` bridges the configured
+    \`terminal.cwd\` into it) and only then falls back to the process directory.
     """
     from tools.approval import get_current_session_key
     from tools.terminal_tool import get_session_cwd
 
-    return get_session_cwd(get_current_session_key(default="") or (task_id or "")) or process_cwd
+    return (
+        get_session_cwd(get_current_session_key(default="") or (task_id or ""))
+        or os.environ.get("TERMINAL_CWD")
+        or process_cwd
+    )
 
 
 def _pre_tool_call(tool_name="", args=None, session_id="", task_id="", **_):

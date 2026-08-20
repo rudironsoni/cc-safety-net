@@ -21,15 +21,16 @@ export function loadPolicySnapshot(options: PolicySnapshotOptions = {}): PolicyS
   const policy = {
     rules: rules.rules,
     transparentWrappers: rules.transparent_wrappers,
-    safety: normalizeSafety(userPolicy.safety),
+    safety: userPolicy.safety,
     worktreeMode: userPolicy.worktreeMode,
     destructiveCommandProtectionEnabled: userPolicy.destructiveCommandProtectionEnabled,
-    destructiveCommandRuleOverrides: { ...userPolicy.destructiveCommandRuleOverrides },
-    destructiveCommandAllowPaths: [...userPolicy.destructiveCommandAllowPaths],
+    destructiveCommandRuleOverrides: userPolicy.destructiveCommandRuleOverrides,
+    destructiveCommandAllowPaths: userPolicy.destructiveCommandAllowPaths,
     secretProtection: {
       enabled: userPolicy.secretProtection.enabled ?? true,
       disabledRules: [...(userPolicy.secretProtection.disabledRules ?? [])],
-      denyPaths: [...userPolicy.secretProtection.denyPaths],
+      denyPaths: userPolicy.secretProtection.denyPaths,
+      allowPaths: userPolicy.secretProtection.allowPaths ?? [],
     },
   };
 
@@ -144,21 +145,6 @@ export function createPolicySnapshot(
     reason: failure.reason,
     ruleMetadata,
   });
-}
-
-function normalizeSafety(safety: ReturnType<typeof loadPolicyConfig>['safety']) {
-  const overrides = safety.overrides;
-  const normalizedOverrides = {
-    ...(overrides?.failClosed !== undefined ? { failClosed: overrides.failClosed } : {}),
-    ...(overrides?.paranoidRm !== undefined ? { paranoidRm: overrides.paranoidRm } : {}),
-    ...(overrides?.paranoidInterpreters !== undefined
-      ? { paranoidInterpreters: overrides.paranoidInterpreters }
-      : {}),
-  };
-  return {
-    ...(safety.level !== undefined ? { level: safety.level } : {}),
-    ...(Object.keys(normalizedOverrides).length > 0 ? { overrides: normalizedOverrides } : {}),
-  };
 }
 
 // Freezes every reachable container so a new policy field can never ship mutable by omission.

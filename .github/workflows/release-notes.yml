@@ -1,0 +1,39 @@
+name: Release Notes
+
+# Dispatched by publish.yml after a release is finalized (workflow_run
+# listeners never fire for publish because prepare-release dispatches it
+# with GITHUB_TOKEN, which suppresses downstream workflow_run events).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-notes
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  generate:
+    if: github.repository == 'kenryu42/cc-safety-net'
+    runs-on: ubuntu-latest
+    environment: claude
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: Install pinned Claude Code
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.237
+          test "$(claude --version)" = "2.1.237 (Claude Code)"
+      - name: Generate and publish release notes
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: claude -p "/release-notes" --model opus --effort high --allowedTools "Bash,Write,Edit"

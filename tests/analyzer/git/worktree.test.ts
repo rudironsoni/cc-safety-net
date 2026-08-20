@@ -21,7 +21,11 @@ import {
   withSymlinkedLinkedWorktreeDirectory,
   withSymlinkToMainWorktreeSubdirectory,
 } from '../../helpers/git-worktree';
-import { createLinkedWorktreeFixture, createSubmoduleLikeGitFileFixture } from '../../helpers.ts';
+import {
+  createLinkedWorktreeFixture,
+  createSubmoduleLikeGitFileFixture,
+  withReadonlyLinkedWorktreeFixture,
+} from '../../helpers.ts';
 
 function getLinkedGitDir(worktree: string): string {
   const dotGitPath = join(worktree, '.git');
@@ -42,9 +46,8 @@ describe('worktree git execution context', () => {
     });
   });
 
-  test('resolves separate and attached git -C options in order', () => {
-    const fixture = createLinkedWorktreeFixture();
-    try {
+  test('resolves separate and attached git -C options in order', async () => {
+    await withReadonlyLinkedWorktreeFixture((fixture) => {
       expect(
         getGitExecutionContext(
           ['git', '-C', fixture.mainWorktree, '-C', '../linked', 'status'],
@@ -64,16 +67,13 @@ describe('worktree git execution context', () => {
         gitCwd: realpathSync(fixture.linkedWorktree),
         hasExplicitGitContext: false,
       });
-    } finally {
-      fixture.cleanup();
-    }
+    });
   });
 
   test.skipIf(process.platform !== 'win32')(
     '[windows] resolves git -C targets with Windows separators',
-    () => {
-      const fixture = createLinkedWorktreeFixture();
-      try {
+    async () => {
+      await withReadonlyLinkedWorktreeFixture((fixture) => {
         expect(
           getGitExecutionContext(
             ['git', '-C', fixture.mainWorktree, '-C', '..\\linked', 'status'],
@@ -83,17 +83,14 @@ describe('worktree git execution context', () => {
           gitCwd: realpathSync(fixture.linkedWorktree),
           hasExplicitGitContext: false,
         });
-      } finally {
-        fixture.cleanup();
-      }
+      });
     },
   );
 
   test.skipIf(process.platform !== 'win32')(
     '[windows] fails closed for separate and attached Git cwd namespace operands',
-    () => {
-      const fixture = createLinkedWorktreeFixture();
-      try {
+    async () => {
+      await withReadonlyLinkedWorktreeFixture((fixture) => {
         const localNamespace = toNamespacedPath(fixture.mainWorktree);
         for (const args of [
           ['git', '-C', localNamespace, 'status'],
@@ -106,9 +103,7 @@ describe('worktree git execution context', () => {
             hasExplicitGitContext: false,
           });
         }
-      } finally {
-        fixture.cleanup();
-      }
+      });
     },
   );
 
@@ -151,9 +146,8 @@ describe('worktree git execution context', () => {
     }
   });
 
-  test('detects explicit git context overrides in arguments', () => {
-    const fixture = createLinkedWorktreeFixture();
-    try {
+  test('detects explicit git context overrides in arguments', async () => {
+    await withReadonlyLinkedWorktreeFixture((fixture) => {
       expect(
         getGitExecutionContext(['git', '--git-dir', '.git', 'status'], fixture.linkedWorktree)
           .hasExplicitGitContext,
@@ -162,14 +156,11 @@ describe('worktree git execution context', () => {
         getGitExecutionContext(['git', '--work-tree=.', 'status'], fixture.linkedWorktree)
           .hasExplicitGitContext,
       ).toBe(true);
-    } finally {
-      fixture.cleanup();
-    }
+    });
   });
 
-  test('skips other git global options before the subcommand', () => {
-    const fixture = createLinkedWorktreeFixture();
-    try {
+  test('skips other git global options before the subcommand', async () => {
+    await withReadonlyLinkedWorktreeFixture((fixture) => {
       expect(
         getGitExecutionContext(
           ['git', '-c', 'foo=bar', '--namespace', 'ns', '-cfoo=baz', '--no-pager', 'status'],
@@ -179,9 +170,7 @@ describe('worktree git execution context', () => {
         gitCwd: realpathSync(fixture.linkedWorktree),
         hasExplicitGitContext: false,
       });
-    } finally {
-      fixture.cleanup();
-    }
+    });
   });
 });
 
@@ -210,20 +199,20 @@ describe('linked worktree detection', () => {
     });
   });
 
-  test('rejects main worktrees, non-repos, and submodule-like git files', () => {
-    const fixture = createLinkedWorktreeFixture();
-    const fakeSubmodule = createSubmoduleLikeGitFileFixture();
-    const tempDir = mkdtempSync(join(tmpdir(), 'safety-net-worktree-unit-'));
-    try {
-      expect(isLinkedWorktree(fixture.mainWorktree)).toBe(false);
-      expect(isLinkedWorktree(tempDir)).toBe(false);
-      expect(isLinkedWorktree(fakeSubmodule.cwd)).toBe(false);
-      expect(isLinkedWorktree(join(tempDir, 'missing'))).toBe(false);
-    } finally {
-      fixture.cleanup();
-      fakeSubmodule.cleanup();
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+  test('rejects main worktrees, non-repos, and submodule-like git files', async () => {
+    await withReadonlyLinkedWorktreeFixture((fixture) => {
+      const fakeSubmodule = createSubmoduleLikeGitFileFixture();
+      const tempDir = mkdtempSync(join(tmpdir(), 'safety-net-worktree-unit-'));
+      try {
+        expect(isLinkedWorktree(fixture.mainWorktree)).toBe(false);
+        expect(isLinkedWorktree(tempDir)).toBe(false);
+        expect(isLinkedWorktree(fakeSubmodule.cwd)).toBe(false);
+        expect(isLinkedWorktree(join(tempDir, 'missing'))).toBe(false);
+      } finally {
+        fakeSubmodule.cleanup();
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 
   test('rejects malformed git files', () => {

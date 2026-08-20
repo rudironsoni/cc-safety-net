@@ -49,7 +49,6 @@ type PolicyConfigTarget = {
 
 type PolicyPathIdentity = {
   readonly file: string;
-  readonly directory: string;
   readonly directoryAndAncestors: ReadonlySet<string>;
 };
 
@@ -72,7 +71,7 @@ export function findPolicyConfigMutationTargetInSemanticFacts(
   const identity = createPolicyPathIdentity(facts.invocation.context.executionCwd, context);
   if (facts.invocation.route.kind === 'patch') {
     return findPolicyConfigMutationTargetInPaths(
-      facts.paths.map((path) => path.raw),
+      facts.paths,
       false,
       facts.invocation.context.executionCwd,
       identity,
@@ -102,7 +101,7 @@ export function findPolicyConfigMutationTargetInSemanticFacts(
   }
 
   return findPolicyConfigMutationTargetInPaths(
-    facts.paths.map((path) => path.raw),
+    facts.paths,
     facts.invocation.route.kind === 'grep' ||
       facts.invocation.route.kind === 'glob' ||
       isReadOnlyTool(facts.invocation.toolName),
@@ -277,7 +276,7 @@ function createPolicyPathIdentity(
     directoryAndAncestors.add(comparePath(current));
     if (dirname(current) === current) break;
   }
-  return { file: comparePath(file), directory: comparePath(directory), directoryAndAncestors };
+  return { file: comparePath(file), directoryAndAncestors };
 }
 
 function isPolicyFile(

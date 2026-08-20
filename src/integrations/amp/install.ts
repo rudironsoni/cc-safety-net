@@ -5,28 +5,41 @@
  * commit and a push; every subprocess goes through the injected runner.
  */
 
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AMP_MANAGED_HEADER } from '@/integrations/amp/artifact';
+import {
+  AMP_MANAGED_HEADER,
+  AMP_PLUGIN_DIRECTORY,
+  AMP_PLUGIN_ENTRY,
+} from '@/integrations/amp/artifact';
 import { type AmpRunner, runAmpCommand } from '@/integrations/amp/run';
-import { readRecord } from '@/integrations/detect/context';
+import { lstatOrUndefined, readRecord } from '@/integrations/detect/context';
 import { atomicWriteFile } from '@/integrations/install/atomic-write';
 import type { InstallResult } from '@/integrations/install/types';
 import { getPackageVersion } from '@/integrations/system-info';
 import { getUserPolicyPath, normalizeGuiPolicy } from '@/policy/store';
 
-const AMP_ARTIFACT_RELATIVE = join('amp', 'cc-safety-net.ts');
-const AMP_PLUGIN_FILE = 'cc-safety-net.ts';
+const AMP_LEGACY_PLUGIN_FILE = 'cc-safety-net.ts';
+const AMP_ARTIFACT_RELATIVE = join('amp', AMP_PLUGIN_ENTRY);
 
 /**
  * Local system-scope plugin path. Nothing installs here anymore; a leftover file masks the
- * personal plugin, so install and uninstall clean it up when it is one of ours.
+ * personal plugin, so install and uninstall clean it up when it is one of ours. Spelled out
+ * rather than sharing the repository migration constant: this path is permanent.
  * @internal
  */
 export function getAmpPluginPath(homeDir: string): string {
-  return join(homeDir, '.config', 'amp', 'plugins', AMP_PLUGIN_FILE);
+  return join(homeDir, '.config', 'amp', 'plugins', 'cc-safety-net.ts');
 }
 
 /**
@@ -54,14 +67,6 @@ export function resolveAmpArtifactPath(
       'Packaged Amp plugin artifact not found. Reinstall cc-safety-net and try again.',
     );
   return found;
-}
-
-function lstatOrUndefined(path: string) {
-  try {
-    return lstatSync(path);
-  } catch {
-    return undefined;
-  }
 }
 
 function parseJsonOrUndefined(raw: string): unknown {
@@ -142,21 +147,59 @@ async function withAmpCheckout<T>(
   }
 }
 
-/** Current managed contents of the plugin in the checkout, or undefined when it is absent. */
-function readManagedPluginFile(checkout: string, action: 'overwrite' | 'remove') {
-  const dest = join(checkout, AMP_PLUGIN_FILE);
+/** The command that resumes what the guard interrupted, so uninstall never says "install". */
+function rerun(action: 'overwrite' | 'remove'): string {
+  return `rerun ${action === 'overwrite' ? 'install' : 'uninstall'} --amp`;
+}
+
+function readManagedPluginFile(
+  checkout: string,
+  relativePath: string,
+  action: 'overwrite' | 'remove',
+) {
+  const dest = join(checkout, relativePath);
   const info = lstatOrUndefined(dest);
   if (!info) return undefined;
   if (info.isSymbolicLink() || !info.isFile())
     throw new Error(
-      `Refusing to ${action} ${AMP_PLUGIN_FILE} in your Amp personal plugins repository: not a regular file. Remove it there and rerun install --amp.`,
+      `Refusing to ${action} ${relativePath} in your Amp personal plugins repository: not a regular file. Remove it there and ${rerun(action)}.`,
     );
 
   const current = readFileSync(dest);
   if (isManagedAmpArtifact(current)) return current;
   throw new Error(
-    `Refusing to ${action} unmanaged file ${AMP_PLUGIN_FILE} in your Amp personal plugins repository. Remove it there and rerun install --amp.`,
+    `Refusing to ${action} unmanaged file ${relativePath} in your Amp personal plugins repository. Remove it there and ${rerun(action)}.`,
   );
+}
+
+/**
+ * Current managed directory-plugin entry, or undefined when the directory is absent. Files the
+ * user keeps beside our entry are ignored on purpose — deliberately unlike OpenClaw's
+ * `holdsOnlyOurPlugin`, which guards a recursive delete of the whole directory, while here
+ * install and uninstall only ever write or `git rm` the single entry file.
+ */
+function readManagedPluginDirectory(checkout: string, action: 'overwrite' | 'remove') {
+  const directory = join(checkout, AMP_PLUGIN_DIRECTORY);
+  const info = lstatOrUndefined(directory);
+  if (!info) return undefined;
+  if (info.isSymbolicLink() || !info.isDirectory())
+    throw new Error(
+      `Refusing to ${action} ${AMP_PLUGIN_DIRECTORY} in your Amp personal plugins repository: not a regular directory. Remove it there and ${rerun(action)}.`,
+    );
+  return readManagedPluginFile(checkout, AMP_PLUGIN_ENTRY, action);
+}
+
+/**
+ * The legacy root file as uninstall sees it: present only when it is still ours. Anything else —
+ * absent, unmanaged, a symlink, a directory — is left untouched rather than refused, since
+ * removing the directory plugin never needs to touch it.
+ */
+function readRemovableLegacyFile(checkout: string) {
+  const dest = join(checkout, AMP_LEGACY_PLUGIN_FILE);
+  const info = lstatOrUndefined(dest);
+  if (!info || info.isSymbolicLink() || !info.isFile()) return undefined;
+  const current = readFileSync(dest);
+  return isManagedAmpArtifact(current) ? current : undefined;
 }
 
 /** False when staging left nothing to commit, so the repository is already up to date. */
@@ -203,6 +246,18 @@ async function commitAndPush(
  * silent skip — with the personal copy removed there is nothing left to mask.
  */
 function removeMaskingLocalPlugin(homeDir: string, onUnmanaged: 'fail' | 'keep'): void {
+  removeMaskingLocalFile(homeDir, onUnmanaged);
+  removeMaskingLocalDirectory(homeDir, onUnmanaged);
+}
+
+function keepUnmanagedLocalPlugin(local: string, onUnmanaged: 'fail' | 'keep'): void {
+  if (onUnmanaged === 'keep') return;
+  throw new Error(
+    `Local Amp plugin ${local} is not a managed copy and masks the personal plugin. Remove it and rerun install --amp.`,
+  );
+}
+
+function removeMaskingLocalFile(homeDir: string, onUnmanaged: 'fail' | 'keep'): void {
   const local = getAmpPluginPath(homeDir);
   const info = lstatOrUndefined(local);
   if (!info) return;
@@ -210,9 +265,32 @@ function removeMaskingLocalPlugin(homeDir: string, onUnmanaged: 'fail' | 'keep')
     rmSync(local);
     return;
   }
-  if (onUnmanaged === 'keep') return;
-  throw new Error(
-    `Local Amp plugin ${local} is not a managed copy and masks the personal plugin. Remove it and rerun install --amp.`,
+  keepUnmanagedLocalPlugin(local, onUnmanaged);
+}
+
+/**
+ * The shipped artifact is a directory, so a hand-copied one masks the personal plugin too.
+ * Removal here is recursive, so it demands a directory holding nothing but our entry — unlike
+ * the hosted repository, where uninstall removes that one entry and leaves the rest alone.
+ */
+function removeMaskingLocalDirectory(homeDir: string, onUnmanaged: 'fail' | 'keep'): void {
+  const local = join(homeDir, '.config', 'amp', 'plugins', AMP_PLUGIN_DIRECTORY);
+  const info = lstatOrUndefined(local);
+  if (!info) return;
+  if (!info.isSymbolicLink() && info.isDirectory() && holdsOnlyManagedEntry(local)) {
+    rmSync(local, { recursive: true });
+    return;
+  }
+  keepUnmanagedLocalPlugin(local, onUnmanaged);
+}
+
+function holdsOnlyManagedEntry(directory: string): boolean {
+  const entryName = basename(AMP_PLUGIN_ENTRY);
+  if (readdirSync(directory).join(' ') !== entryName) return false;
+  const entry = join(directory, entryName);
+  const info = lstatOrUndefined(entry);
+  return (
+    !!info && !info.isSymbolicLink() && info.isFile() && isManagedAmpArtifact(readFileSync(entry))
   );
 }
 
@@ -244,17 +322,23 @@ export async function installAmp(
   const cloneRef = await requirePersonalPluginsRef(run);
 
   return withAmpCheckout(run, async (checkout) => {
-    const path = `${cloneRef}/${AMP_PLUGIN_FILE}`;
-    if (readManagedPluginFile(checkout, 'overwrite')?.equals(content)) {
+    const path = `${cloneRef}/${AMP_PLUGIN_DIRECTORY}`;
+    const current = readManagedPluginDirectory(checkout, 'overwrite');
+    const legacy = readManagedPluginFile(checkout, AMP_LEGACY_PLUGIN_FILE, 'overwrite');
+    if (current?.equals(content) && !legacy) {
       removeMaskingLocalPlugin(homeDir, 'fail');
       return { path, alreadyInstalled: true };
     }
 
-    atomicWriteFile(join(checkout, AMP_PLUGIN_FILE), content);
+    mkdirSync(join(checkout, AMP_PLUGIN_DIRECTORY), { recursive: true });
+    atomicWriteFile(join(checkout, AMP_PLUGIN_ENTRY), content);
+    if (legacy) rmSync(join(checkout, AMP_LEGACY_PLUGIN_FILE));
     const pushed = await commitAndPush(
       run,
       checkout,
-      ['git', 'add', AMP_PLUGIN_FILE],
+      // Explicit pathspecs, never the directory: a gitignored plugin path then fails loudly
+      // instead of staging nothing and reporting the install as already up to date.
+      ['git', 'add', '--', AMP_PLUGIN_ENTRY, ...(legacy ? [AMP_LEGACY_PLUGIN_FILE] : [])],
       `chore: update cc-safety-net plugin to v${getPackageVersion()}`,
     );
     removeMaskingLocalPlugin(homeDir, 'fail');
@@ -269,8 +353,11 @@ export async function uninstallAmp(
   const cloneRef = await requirePersonalPluginsRef(run);
 
   return withAmpCheckout(run, async (checkout) => {
-    const path = `${cloneRef}/${AMP_PLUGIN_FILE}`;
-    if (!readManagedPluginFile(checkout, 'remove')) {
+    const current = readManagedPluginDirectory(checkout, 'remove');
+    const legacy = readRemovableLegacyFile(checkout);
+    // A checkout that never migrated holds only the root file, so that is what was removed.
+    const path = `${cloneRef}/${legacy && !current ? AMP_LEGACY_PLUGIN_FILE : AMP_PLUGIN_DIRECTORY}`;
+    if (!current && !legacy) {
       removeMaskingLocalPlugin(homeDir, 'keep');
       return { path, alreadyInstalled: false };
     }
@@ -278,7 +365,14 @@ export async function uninstallAmp(
     await commitAndPush(
       run,
       checkout,
-      ['git', 'rm', AMP_PLUGIN_FILE],
+      // Only our own entry, never `-r` on the directory: whatever else the user keeps there stays.
+      [
+        'git',
+        'rm',
+        '--',
+        ...(current ? [AMP_PLUGIN_ENTRY] : []),
+        ...(legacy ? [AMP_LEGACY_PLUGIN_FILE] : []),
+      ],
       `chore: remove cc-safety-net plugin v${getPackageVersion()}`,
     );
     removeMaskingLocalPlugin(homeDir, 'keep');

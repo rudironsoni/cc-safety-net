@@ -4,7 +4,7 @@
 
 import { colors } from '@/cli/utils/colors';
 import { renderTerminalText } from '@/cli/utils/terminal';
-import { getIntegrationDisplayName } from '@/integrations/catalog';
+import { doctorIntegrationOrder, getIntegrationDisplayName } from '@/integrations/catalog';
 import type {
   ActivitySummary,
   ConfigSourceInfo,
@@ -423,18 +423,10 @@ function formatSystemInfoTable(system: SystemInfo): string {
 
   const rowData = [
     { label: 'cc-safety-net', value: system.version },
-    { label: 'Claude Code', value: system.claudeCodeVersion },
-    { label: 'Amp Code', value: system.ampVersion },
-    { label: 'Antigravity CLI', value: system.antigravityCliVersion },
-    { label: 'Codex', value: system.codexCliVersion },
-    { label: 'Cursor', value: system.cursorVersion },
-    { label: 'Gemini CLI', value: system.geminiCliVersion },
-    { label: 'GitHub Copilot CLI', value: system.copilotCliVersion },
-    { label: 'Hermes Agent', value: system.hermesAgentVersion },
-    { label: 'Kimi Code', value: system.kimiCodeVersion },
-    { label: 'OpenClaw', value: system.openClawVersion },
-    { label: 'OpenCode', value: system.openCodeVersion },
-    { label: 'Pi', value: system.piCliVersion },
+    ...doctorIntegrationOrder.map((id) => ({
+      label: getIntegrationDisplayName(id),
+      value: system.versions[id] ?? null,
+    })),
     { label: 'Node.js', value: system.nodeVersion },
     { label: 'npm', value: system.npmVersion },
     { label: 'Bun', value: system.bunVersion },

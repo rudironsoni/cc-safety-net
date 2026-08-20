@@ -7,7 +7,7 @@ export const REASON_DERIVED_COMMAND_WORK_LIMIT =
   "Command analysis exceeds CC Safety Net's derived-command work limit. Reduce nested or embedded command complexity and retry.";
 
 export const REASON_ENV_SPLIT_STRING_UNVERIFIABLE =
-  'env -S split-string variables cannot be resolved safely. Use literal values or expand the command explicitly.';
+  'env -S split-string expansion exceeds the 16,384-token analysis limit and cannot be verified safely. Expand the command explicitly.';
 
 export type DerivedCommandWorkBudget = {
   derivedTokens: number;

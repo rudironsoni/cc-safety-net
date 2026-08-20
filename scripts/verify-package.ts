@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { AMP_PLUGIN_ENTRY } from '../src/integrations/amp/artifact';
 import { AMP_HOST_SCRIPT, OPENCODE_HOST_SCRIPT, PI_HOST_SCRIPT } from './integration-host-scripts';
 import { verifyBuildArtifacts } from './verify-build';
 
@@ -23,9 +24,10 @@ const PACKAGE_ROOT_FILES = [
   'package/package.json',
 ] as const;
 // The standalone Amp and OpenClaw plugins each bundle their own trimmed zod
-// copy, so the tarball is materially larger than the pure-Node bundles alone.
-// Current size is ~468 KB; the cap leaves ~44 KB of headroom.
-const MAX_TARBALL_BYTES = 512_000;
+// copy, and dist/vendor/zod.cjs ships a third for the repository-checkout
+// channels, so the tarball is materially larger than the pure-Node bundles
+// alone. Current size is ~490 KB; the cap leaves ~57 KB of headroom.
+const MAX_TARBALL_BYTES = 560_000;
 
 interface PackResult {
   filename: string;
@@ -121,7 +123,7 @@ export async function verifyPackage(): Promise<void> {
       'dist/index.js',
       'dist/bin/cc-safety-net.js',
       'dist/pi/index.js',
-      'dist/amp/cc-safety-net.ts',
+      `dist/amp/${AMP_PLUGIN_ENTRY}`,
     ]) {
       if (readFileSync(join(packageRoot, bundle), 'utf8').includes('_operation')) {
         throw new Error(`Packed ${bundle} exposes the internal rule synchronization operation`);
@@ -132,7 +134,7 @@ export async function verifyPackage(): Promise<void> {
       cli,
       pi: join(packageRoot, 'dist', 'pi', 'index.js'),
       openCode: join(packageRoot, 'dist', 'index.js'),
-      amp: join(packageRoot, 'dist', 'amp', 'cc-safety-net.ts'),
+      amp: join(packageRoot, 'dist', 'amp', AMP_PLUGIN_ENTRY),
       env: packageVerificationEnv,
     });
     const overLimitRulebook = join(

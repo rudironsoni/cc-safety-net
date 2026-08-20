@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
 import { realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { toNamespacedPath } from 'node:path';
-import { dangerousInText } from '@/analyzer/dangerous-text';
+import { dangerousInTextMatch } from '@/analyzer/dangerous-text';
 import { containsDangerousCode, extractInterpreterCodeArg } from '@/analyzer/interpreters';
 import { extractParallelChildStart } from '@/analyzer/parallel';
 import {
@@ -30,6 +30,8 @@ import { assertBlocked, createLinkedWorktreeFixture, withEnv } from '../helpers.
 
 const RM_COMMAND = ['r', 'm'].join('');
 const RM_RECURSIVE_FORCE = ['-', 'r', 'f'].join('');
+
+const dangerousInText = (text: string) => dangerousInTextMatch(text)?.reason ?? null;
 
 const splitShellCommands = (command: string) =>
   projectSegmentWords(parseCommand(command)).map((segment) => [...segment]);

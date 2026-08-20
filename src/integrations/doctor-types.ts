@@ -137,35 +137,14 @@ export interface UpdateInfo {
 export interface SystemInfo {
   /** cc-safety-net version */
   version: string;
-  /** Claude Code version (from `claude --version`) */
-  claudeCodeVersion: string | null;
-  /** OpenCode version (from `opencode --version`) */
-  openCodeVersion: string | null;
-  /** Antigravity CLI version (from `agy --version`) */
-  antigravityCliVersion: string | null;
-  /** Codex CLI version (from `codex --version`) */
-  codexCliVersion: string | null;
+  /** Per-integration version, keyed by id, from the catalog's `probeCommand`. Copilot's probe is
+   * `copilot --binary-version`; `copilot --version` is never run because it downloads a ~160 MB
+   * package cache. */
+  versions: Partial<Record<IntegrationId, string | null>>;
   /** Codex plugin list output (from `codex plugin list`) */
   codexPluginListOutput: string | null;
   /** Amp plugin list output (from `amp plugins list`) */
   ampPluginListOutput: string | null;
-  /** Gemini CLI version (from `gemini --version`) */
-  geminiCliVersion: string | null;
-  /** GitHub Copilot CLI version (from `copilot --binary-version`; `copilot --version` is never
-   * run because it downloads a ~160 MB package cache) */
-  copilotCliVersion: string | null;
-  /** Hermes Agent version (from `hermes --version`) */
-  hermesAgentVersion: string | null;
-  /** Kimi Code version (from `kimi --version`) */
-  kimiCodeVersion: string | null;
-  /** OpenClaw version (from `openclaw --version`) */
-  openClawVersion: string | null;
-  /** Pi CLI version (from `pi --version`) */
-  piCliVersion: string | null;
-  /** Cursor version (from `cursor --version`) */
-  cursorVersion: string | null;
-  /** Amp Code version (from `amp --version`) */
-  ampVersion: string | null;
   /** Node.js version (from `node --version`) */
   nodeVersion: string | null;
   /** npm version (from `npm --version`) */

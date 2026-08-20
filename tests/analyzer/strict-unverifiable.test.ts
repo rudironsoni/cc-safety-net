@@ -43,6 +43,30 @@ const strictOnlyCases: {
     ruleId: 'shell.dynamic-structure',
     intent: 'stop_and_explain',
   },
+  {
+    name: 'assigned variable executable',
+    command: 'c=rm; "$c" -rf dir',
+    ruleId: 'shell.dynamic-executable',
+    intent: 'manual_only',
+  },
+  {
+    name: 'variable executable',
+    command: '$CMD --version',
+    ruleId: 'shell.dynamic-executable',
+    intent: 'manual_only',
+  },
+  {
+    name: 'rm option injection through substitution',
+    command: "rm $(printf -- '-rf') dir",
+    ruleId: 'shell.dynamic-structure',
+    intent: 'stop_and_explain',
+  },
+  {
+    name: 'rm trailing substitution without literal recursive-force flags',
+    command: 'rm $(cat list)',
+    ruleId: 'shell.dynamic-structure',
+    intent: 'stop_and_explain',
+  },
 ];
 
 const paranoidOnlyCases: Array<{

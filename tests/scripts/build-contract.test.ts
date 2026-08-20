@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AMP_MANAGED_HEADER, buildAmpArtifactHeader } from '@/integrations/amp/artifact';
@@ -8,7 +9,11 @@ import {
   OPENCLAW_MANAGED_HEADER,
 } from '@/integrations/openclaw/artifact';
 import pkg from '../../package.json';
-import { buildAmpBundle, buildOpenClawBundle } from '../../scripts/build-runtime';
+import {
+  buildAmpBundle,
+  buildOpenClawBundle,
+  buildRuntimeBundles,
+} from '../../scripts/build-runtime';
 import {
   getRuntimeImportSpecifiers,
   requiresRepositoryExecutableMode,
@@ -22,8 +27,9 @@ function writeBuildFixture(directory: string) {
   mkdirSync(join(directory, 'dist', 'bin'), { recursive: true });
   mkdirSync(join(directory, 'dist', 'chunks'), { recursive: true });
   mkdirSync(join(directory, 'dist', 'pi'), { recursive: true });
-  mkdirSync(join(directory, 'dist', 'amp'), { recursive: true });
+  mkdirSync(join(directory, 'dist', 'amp', 'cc-safety-net'), { recursive: true });
   mkdirSync(join(directory, 'dist', 'openclaw', 'cc-safety-net'), { recursive: true });
+  mkdirSync(join(directory, 'dist', 'vendor'), { recursive: true });
   writeFileSync(
     join(directory, 'dist', 'bin', 'cc-safety-net.js'),
     '#!/usr/bin/env node\nimport "../chunks/index-fixture.js";\n',
@@ -33,8 +39,9 @@ function writeBuildFixture(directory: string) {
   writeFileSync(join(directory, 'dist', 'index.d.ts'), 'export {};\n');
   writeFileSync(join(directory, 'dist', 'index.js'), 'import "./chunks/index-fixture.js";\n');
   writeFileSync(join(directory, 'dist', 'pi', 'index.js'), 'export {};\n');
+  writeFileSync(join(directory, 'dist', 'vendor', 'zod.cjs'), 'module.exports = {};\n');
   writeFileSync(
-    join(directory, 'dist', 'amp', 'cc-safety-net.ts'),
+    join(directory, 'dist', 'amp', 'cc-safety-net', 'index.ts'),
     `${buildAmpArtifactHeader(pkg.version)}export {};\n`,
   );
   writeFileSync(
@@ -50,7 +57,8 @@ describe('generated artifact contract', () => {
   test('builds the managed Amp artifact from the current source', async () => {
     await withTempDir('cc-safety-net-build-amp-source-', async (directory) => {
       const result = await buildAmpBundle(join(directory, 'dist'));
-      const artifact = readFileSync(join(directory, 'dist', 'amp', 'cc-safety-net.ts'), 'utf8');
+      const path = join(directory, 'dist', 'amp', 'cc-safety-net', 'index.ts');
+      const artifact = readFileSync(path, 'utf8');
 
       expect(result.success).toBeTrue();
       expect(artifact.startsWith(buildAmpArtifactHeader(pkg.version))).toBeTrue();
@@ -78,13 +86,99 @@ describe('generated artifact contract', () => {
     });
   });
 
+  test('built runtime bundles enforce custom rules without node_modules', async () => {
+    await withTempDir('cc-safety-net-build-standalone-', async (directory) => {
+      const result = await buildRuntimeBundles(join(directory, 'dist'));
+      expect(result.success).toBeTrue();
+      writeFileSync(join(directory, 'package.json'), '{"type":"module"}\n');
+      const home = join(directory, 'home');
+      const rules = join(home, '.cc-safety-net', 'rules');
+      mkdirSync(join(rules, 'user-rules'), { recursive: true });
+      const rulebook = JSON.stringify({
+        rulebook_version: 1,
+        name: 'user-rules',
+        version: '1.0.0',
+        allowed_commands: ['docker'],
+        rules: [
+          {
+            name: 'block-docker-system-prune',
+            command: 'docker',
+            subcommand: 'system',
+            block_args: ['prune'],
+            reason: 'Use targeted cleanup instead.',
+          },
+        ],
+      });
+      writeFileSync(join(rules, 'user-rules', 'rulebook.json'), rulebook);
+      writeFileSync(
+        join(rules, 'rule.json'),
+        JSON.stringify({ version: 1, rules: ['user-rules'] }),
+      );
+      const digest = createHash('sha256').update(rulebook).digest('hex');
+      writeFileSync(
+        join(rules, 'rule.lock'),
+        JSON.stringify({
+          version: 1,
+          rulebooks: [
+            {
+              spec: 'user-rules',
+              kind: 'local-directory',
+              path: 'user-rules',
+              name: 'user-rules',
+              version: '1.0.0',
+              digest: `sha256:${digest}`,
+            },
+          ],
+        }),
+      );
+      // `rule sync` materializes the resolved rulebook here; the guard reads the
+      // cached copy, so the fixture ships it instead of shelling out to sync.
+      const cached = join(
+        home,
+        '.cc-safety-net',
+        'cache',
+        'rulebooks',
+        `user-rules--${digest.slice(0, 12)}`,
+      );
+      mkdirSync(cached, { recursive: true });
+      writeFileSync(join(cached, 'rulebook.json'), rulebook);
+      const proc = Bun.spawnSync(
+        ['node', join(directory, 'dist', 'bin', 'cc-safety-net.js'), 'hook', '--coding-cli'],
+        {
+          cwd: directory,
+          stdin: Buffer.from(
+            JSON.stringify({
+              hook_event_name: 'PreToolUse',
+              tool_name: 'Bash',
+              tool_input: { command: 'docker system prune' },
+            }),
+          ),
+          stdout: 'pipe',
+          stderr: 'pipe',
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            CC_SAFETY_NET_HOME: join(home, '.cc-safety-net'),
+            CC_SAFETY_NET_AUDIT_HOME: home,
+            NODE_PATH: '',
+          },
+        },
+      );
+
+      expect(proc.stderr.toString()).toBe('');
+      expect(proc.exitCode).toBe(0);
+      expect(proc.stdout.toString()).toContain('custom.user-rules/block-docker-system-prune');
+    });
+  });
+
   test('tracks required entry artifacts and their shared chunks', async () => {
     const files = await verifyBuildArtifacts();
     expect(files).toContain('dist/bin/cc-safety-net.js');
     expect(files).toContain('dist/index.d.ts');
     expect(files).toContain('dist/index.js');
     expect(files).toContain('dist/pi/index.js');
-    expect(files).toContain('dist/amp/cc-safety-net.ts');
+    expect(files).toContain('dist/amp/cc-safety-net/index.ts');
     expect(files).toContain('dist/openclaw/cc-safety-net/index.js');
     expect(files).toContain('dist/openclaw/cc-safety-net/openclaw.plugin.json');
     expect(files).toContain('dist/openclaw/cc-safety-net/package.json');
@@ -105,11 +199,10 @@ describe('generated artifact contract', () => {
   });
 
   test('ships a self-contained Amp artifact with the managed header and package version', () => {
-    const artifact = readFileSync('dist/amp/cc-safety-net.ts', 'utf8');
+    const artifact = readFileSync('dist/amp/cc-safety-net/index.ts', 'utf8');
     expect(() => verifyManagedArtifact('Amp', AMP_MANAGED_HEADER, artifact)).not.toThrow();
     expect(artifact.startsWith(AMP_MANAGED_HEADER)).toBeTrue();
     expect(artifact).toContain(`// version: ${pkg.version}`);
-    // zod is bundled in, not left as a runtime require, and nothing imports it.
     expect(artifact).toContain('ZodError');
     expect(unbundledRuntimeImports(artifact)).toEqual([]);
   });
@@ -150,7 +243,7 @@ describe('generated artifact contract', () => {
       const originalCwd = process.cwd();
       process.chdir(directory);
       try {
-        writeFileSync('dist/amp/cc-safety-net.ts', 'export {};\n');
+        writeFileSync('dist/amp/cc-safety-net/index.ts', 'export {};\n');
         await expect(verifyBuildArtifacts()).rejects.toThrow('managed-file header');
       } finally {
         process.chdir(originalCwd);

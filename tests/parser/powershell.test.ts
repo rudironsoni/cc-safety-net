@@ -69,6 +69,16 @@ describe('PowerShell command parser boundary', () => {
     expect(views[0]?.nested[0]?.span).toEqual({ start: 15, end: 31 });
   });
 
+  test('keeps a closing parenthesis inside a doubled-quote string in its subexpression', () => {
+    const program = parseCommand("Write-Output $('it''s ) safe')", 'powershell');
+
+    expect(program.status).toBe('complete');
+    expect(program.issues).toEqual([]);
+    expect(projectCommandViews(program).map((view) => view.words.map((word) => word.text))).toEqual(
+      [['Write-Output', "$('it''s ) safe')"], ["it's ) safe"]],
+    );
+  });
+
   test('propagates malformed and depth-limited PowerShell subexpressions', () => {
     expect(parseCommand('Write-Output $(git reset --hard', 'powershell')).toMatchObject({
       status: 'partial',

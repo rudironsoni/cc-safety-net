@@ -5,7 +5,8 @@ This document records two security findings discovered while adding quote proven
 
 ## 1. Quote-provenance sentinel spoofing
 
-Status: fixed in the current working tree; not yet committed.
+Status: resolved. The internal-parser rewrite removed the sentinel mechanism entirely; the
+reproduction is analyzed without any sentinel rewriting.
 
 ### Impact
 
@@ -32,21 +33,19 @@ that never appeared contiguously in the source.
 
 ### Fix and coverage
 
-Sentinel selection now checks both the normalized source and token values from a pre-shield parse.
-If either contains the candidate prefix, a different prefix is selected. Regression coverage
-asserts that:
-
-- a quote-concatenated sentinel-like operand remains unchanged;
-- only the real exact `"$tmp"` operand receives quote provenance; and
-- the additional literal target is still blocked in a home-directory context.
-
-The coverage is in `tests/analyzer/parsing-helpers.test.ts` and
-`tests/analyzer/rules-rm.test.ts`.
+The interim sentinel-selection hardening described here was superseded before it landed: the
+analyzer now parses commands with the internal parser in `src/parser/` and never rewrites operands
+through sentinel markers, so no token can be mistaken for the proven `mktemp` variable. The
+`__CC_SAFETY_NET_EXACT` sentinel and the `shell-quote` dependency are absent from `src/`. No
+dedicated regression fixture exists for the reproduction above; the mechanism it attacked was
+removed, and the reproduction is blocked by the ordinary home-directory recursive-delete rules.
 
 ## 2. Pre-existing dynamic temp-path classification gaps
 
-Status: open and pre-existing. These cases are outside the currently approved `$TMPDIR` literal-
-suffix change and require a separate compatibility decision.
+Status: resolved at the strict tier. Strict and paranoid block every shape below as
+`rm.recursive-force-dynamic-target` (brace traversal is blocked in every mode); standard keeps the
+RR-3 compatibility allowance for the variable shapes. Regression tests live in
+`tests/analyzer/rules-rm.test.ts`.
 
 ### 2.1 Dynamic suffixes under literal temp roots
 
@@ -66,9 +65,8 @@ Expected behavior: dynamic expansions, traversal, command substitutions, backtic
 expansion, and extglob syntax should not receive the literal temp-root exception. Unsafe cases
 should return `rm.recursive-force-dynamic-target`.
 
-Likely fix: validate the suffix of literal `/tmp` and `/var/tmp` targets before returning
-`temp_target`, using the same source-level constraints applied to symbolic temp roots. This changes
-existing compatibility behavior and needs an explicit policy decision plus focused tests.
+Strict-tier code now rejects dynamic syntax beneath literal `/tmp` and `/var/tmp` roots; the brace
+form's `..` component defeats temp classification in every mode.
 
 ### 2.2 Word splitting in unquoted `$TMPDIR` targets
 
@@ -78,24 +76,22 @@ Analyzer-only example:
 TMPDIR="/tmp/safe /Users"; rm -rf $TMPDIR/literal
 ```
 
-`isTmpdirOverriddenToNonTemp` accepts the assigned value because it appears rooted beneath `/tmp`.
-The recursive-delete classifier then allows the unquoted `$TMPDIR/literal` compatibility form.
-During real shell execution, word splitting turns it into multiple operands, including a path
-outside the intended temp root. Mutated `IFS` values can create related splitting hazards.
+The statement-level assignment previously never reached tracked shell state (the space-containing
+single-token segment returned before env application), so the rm segment trusted `$TMPDIR`.
+Assignment tracking now applies on that path, and word-splitting values are distrusted, so strict
+and paranoid block the reproduction; standard keeps the RR-3 allowance. During real shell
+execution, word splitting turns the target into multiple operands, including a path outside the
+intended temp root. Mutated `IFS` values can create related splitting hazards.
 
 Expected behavior: an unquoted `$TMPDIR` target must not be trusted when the effective value can
 split into multiple shell words. Unsafe `TMPDIR` assignments and relevant `IFS` mutations should
 fail closed.
 
-Possible fixes include rejecting `TMPDIR` overrides containing word-splitting characters, or
-carrying quote provenance and shell-state constraints into direct `$TMPDIR` target classification.
-The latter is more complete but changes the compatibility exception and requires a dedicated
-design decision.
+Fixed by applying shell-state tracking on the deferred single-token path; the existing
+word-splitting distrust in `src/analyzer/tmpdir.ts` then applies.
 
 ## Required follow-up
 
-1. Decide whether dynamic syntax beneath literal `/tmp` and `/var/tmp` roots should be blocked with
-   the same literal-suffix policy as `$TMPDIR`.
-2. Define the compatibility boundary for unquoted `$TMPDIR` targets when `TMPDIR` or `IFS` is
-   assigned in the analyzed command.
-3. Add failing tests before implementing either open fix, then run `bun run check`.
+All follow-ups are resolved: strict and paranoid block dynamic syntax beneath literal temp roots
+and distrust word-splitting `TMPDIR` assignments in both statement and prefix form; standard keeps
+the RR-3 compatibility allowance. `IFS` mutation already fails closed in every mode.

@@ -10,8 +10,7 @@ type RuntimeMetadata = {
 type InstallMetadata = {
   order: number;
   flag: string;
-  installLabel: string;
-  helpTarget: string;
+  artifactKind: 'plugin' | 'extension' | 'hook config' | 'package';
   probeCommand: readonly [string, ...string[]];
 };
 
@@ -37,8 +36,7 @@ const catalog = [
     install: {
       order: 2,
       flag: '--agy-cli',
-      installLabel: 'Antigravity CLI',
-      helpTarget: 'Antigravity CLI hook config',
+      artifactKind: 'hook config',
       probeCommand: ['agy', '--version'],
     },
   },
@@ -57,8 +55,7 @@ const catalog = [
     install: {
       order: 3,
       flag: '--claude-code',
-      installLabel: 'Claude Code',
-      helpTarget: 'Claude Code plugin',
+      artifactKind: 'plugin',
       probeCommand: ['claude', '--version'],
     },
   },
@@ -69,8 +66,7 @@ const catalog = [
     install: {
       order: 4,
       flag: '--codex',
-      installLabel: 'Codex',
-      helpTarget: 'Codex plugin',
+      artifactKind: 'plugin',
       probeCommand: ['codex', '--version'],
     },
   },
@@ -87,8 +83,7 @@ const catalog = [
     install: {
       order: 7,
       flag: '--copilot-cli',
-      installLabel: 'GitHub Copilot CLI',
-      helpTarget: 'GitHub Copilot CLI plugin',
+      artifactKind: 'plugin',
       probeCommand: ['copilot', '--binary-version'],
     },
   },
@@ -105,8 +100,7 @@ const catalog = [
     install: {
       order: 6,
       flag: '--gemini-cli',
-      installLabel: 'Gemini CLI',
-      helpTarget: 'Gemini CLI extension',
+      artifactKind: 'extension',
       probeCommand: ['gemini', '--version'],
     },
   },
@@ -123,8 +117,7 @@ const catalog = [
     install: {
       order: 8,
       flag: '--hermes-agent',
-      installLabel: 'Hermes Agent',
-      helpTarget: 'Hermes Agent plugin',
+      artifactKind: 'plugin',
       probeCommand: ['hermes', '--version'],
     },
   },
@@ -141,8 +134,7 @@ const catalog = [
     install: {
       order: 9,
       flag: '--kimi-code',
-      installLabel: 'Kimi Code',
-      helpTarget: 'Kimi Code hook config',
+      artifactKind: 'hook config',
       probeCommand: ['kimi', '--version'],
     },
   },
@@ -153,8 +145,7 @@ const catalog = [
     install: {
       order: 10,
       flag: '--openclaw',
-      installLabel: 'OpenClaw',
-      helpTarget: 'OpenClaw plugin',
+      artifactKind: 'plugin',
       probeCommand: ['openclaw', '--version'],
     },
   },
@@ -165,8 +156,7 @@ const catalog = [
     install: {
       order: 11,
       flag: '--opencode',
-      installLabel: 'OpenCode',
-      helpTarget: 'OpenCode plugin',
+      artifactKind: 'plugin',
       probeCommand: ['opencode', '--version'],
     },
   },
@@ -177,8 +167,7 @@ const catalog = [
     install: {
       order: 12,
       flag: '--pi',
-      installLabel: 'Pi',
-      helpTarget: 'Pi package',
+      artifactKind: 'package',
       probeCommand: ['pi', '--version'],
     },
   },
@@ -195,8 +184,7 @@ const catalog = [
     install: {
       order: 5,
       flag: '--cursor',
-      installLabel: 'Cursor',
-      helpTarget: 'Cursor hook config',
+      artifactKind: 'hook config',
       probeCommand: ['cursor', '--version'],
     },
   },
@@ -207,8 +195,7 @@ const catalog = [
     install: {
       order: 1,
       flag: '--amp',
-      installLabel: 'Amp Code',
-      helpTarget: 'Amp Code plugin',
+      artifactKind: 'plugin',
       probeCommand: ['amp', '--version'],
     },
   },
@@ -253,8 +240,4 @@ export const integrationDisplayNames = Object.fromEntries(
 
 export function getIntegrationDisplayName(id: IntegrationId): string {
   return catalog.find((integration) => integration.id === id)?.displayName ?? id;
-}
-
-export function getIntegrationInstallLabel(id: IntegrationId): string {
-  return catalog.find((integration) => integration.id === id)?.install.installLabel ?? id;
 }

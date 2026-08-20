@@ -1,11 +1,14 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { Writable } from 'node:stream';
+import { runInstallCommand } from '@/cli/install';
 import { buildAmpArtifactHeader } from '@/integrations/amp/artifact';
 import { ampArtifactCandidates, resolveAmpArtifactPath } from '@/integrations/amp/install';
 import { getAntigravityHooksPath } from '@/integrations/antigravity/hook';
 import { getCursorHooksPath, installCursor, uninstallCursor } from '@/integrations/cursor/install';
+import { captureConsoleOutput, withEnv } from '../../helpers';
 import { makeTempHome, runCli } from '../hook-helpers';
 import {
   makeLoggedFakeCommandHome,
@@ -31,6 +34,14 @@ const COPILOT_INSTALL_COMMANDS = [
   'copilot plugin marketplace add kenryu42/cc-marketplace',
   'copilot plugin install cc-safety-net@cc-marketplace',
 ] as const;
+const sharedFakeCommandHomes = new Map<string, ReturnType<typeof makeLoggedFakeCommandHome>>();
+
+afterAll(() => {
+  sharedFakeCommandHomes.forEach((fake) => {
+    rmSync(fake.homeDir, { recursive: true, force: true });
+  });
+  sharedFakeCommandHomes.clear();
+});
 
 function writeGeminiExtension(homeDir: string, options: { disabled?: boolean } = {}) {
   const extensionsDir = join(homeDir, '.gemini', 'extensions');
@@ -74,9 +85,23 @@ function writeNpxCacheEntry(homeDir: string, entry: string, packageName: string)
   return entryPath;
 }
 
-function makeFakeBinHome(name: string, commands: readonly string[]) {
-  const fake = makeLoggedFakeCommandHome(name, commands);
-  return { ...fake, path: `${fake.binDir}${delimiter}${process.env.PATH ?? ''}` };
+function makeFakeBinHome(name: string, commands: readonly string[], isolatedBin = true) {
+  if (isolatedBin) {
+    const fake = makeLoggedFakeCommandHome(name, commands);
+    return { ...fake, path: `${fake.binDir}${delimiter}${process.env.PATH ?? ''}` };
+  }
+
+  const key = JSON.stringify(commands);
+  const cached = sharedFakeCommandHomes.get(key);
+  const fake = cached ?? makeLoggedFakeCommandHome('safety-net-shared-native-command', commands);
+  sharedFakeCommandHomes.set(key, fake);
+  const homeDir = makeTempHome(name);
+  return {
+    binDir: fake.binDir,
+    homeDir,
+    logPath: join(homeDir, 'commands.log'),
+    path: `${fake.binDir}${delimiter}${process.env.PATH ?? ''}`,
+  };
 }
 
 function readCommandLog(logPath: string): string[] {
@@ -93,24 +118,58 @@ function runNativeCli(
   action: 'install' | 'uninstall',
   targetFlag: string,
 ) {
-  return runCli([action, targetFlag], '', {
-    HOME: fake.homeDir,
-    PATH: fake.path,
-    CC_SAFETY_NET_TEST_COMMAND_LOG: fake.logPath,
-  });
+  return captureConsoleOutput(({ stdout }) => {
+    const output = new Writable({
+      write(chunk, _encoding, callback) {
+        stdout.push(String(chunk).trim());
+        callback();
+      },
+    });
+    return withEnv(
+      {
+        HOME: fake.homeDir,
+        PATH: fake.path,
+        CC_SAFETY_NET_TEST_COMMAND_LOG: fake.logPath,
+      },
+      () => runInstallCommand(action, [targetFlag], { output: output as NodeJS.WriteStream }),
+    );
+  }).then(({ result: exitCode, stdout, stderr }) => ({
+    exitCode,
+    stdout: stdout.filter(Boolean).join('\n').trim(),
+    stderr: stderr.filter(Boolean).join('\n').trim(),
+  }));
 }
 
-function expectCodexTrustReminder(result: Awaited<ReturnType<typeof runCli>>) {
+function expectCodexTrustReminder(result: Awaited<ReturnType<typeof runNativeCli>>) {
   expect(result.stdout).toContain('Start Codex');
   expect(result.stdout).toContain('/hooks');
   expect(result.stdout).toContain('press `t`');
 }
 
+function codexPluginListOptions(pluginList: string, options: NativeActionOptions = {}) {
+  return {
+    isolatedBin: true,
+    ...options,
+    setup: (fake: ReturnType<typeof makeFakeBinHome>) => {
+      writeFileSync(
+        join(fake.homeDir, 'bin', 'codex'),
+        `#!/usr/bin/env sh
+printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
+if [ "$*" = "plugin list" ]; then
+  printf '%s\\n' '${pluginList}'
+fi
+`,
+      );
+    },
+  };
+}
+
 type NativeActionOptions = {
+  isolatedBin?: boolean;
   setup?: (fake: ReturnType<typeof makeFakeBinHome>) => void;
   assert?: (
     fake: ReturnType<typeof makeFakeBinHome>,
-    result: Awaited<ReturnType<typeof runCli>>,
+    result: Awaited<ReturnType<typeof runNativeCli>>,
   ) => void;
 };
 
@@ -122,7 +181,11 @@ async function expectNativeAction(
   stdoutContains: string,
   options: NativeActionOptions = {},
 ) {
-  const fake = makeFakeBinHome(`safety-net-${targetFlag.slice(2)}-${action}`, fakeCommands);
+  const fake = makeFakeBinHome(
+    `safety-net-${targetFlag.slice(2)}-${action}`,
+    fakeCommands,
+    options.isolatedBin ?? false,
+  );
 
   try {
     options.setup?.(fake);
@@ -384,19 +447,9 @@ describe('install command', () => {
         'codex plugin remove safety-net@cc-marketplace',
       ],
       'Installed Codex integration',
-      {
-        setup: (fake) => {
-          writeFileSync(
-            join(fake.homeDir, 'bin', 'codex'),
-            `#!/usr/bin/env sh
-printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
-if [ "$*" = "plugin list" ]; then
-  printf 'safety-net@cc-marketplace https://github.com/kenryu42/cc-safety-net.git installed, enabled\\n'
-fi
-`,
-          );
-        },
-      },
+      codexPluginListOptions(
+        'safety-net@cc-marketplace https://github.com/kenryu42/cc-safety-net.git installed, enabled',
+      ),
     );
   });
 
@@ -410,20 +463,9 @@ fi
         'codex plugin add cc-safety-net@cc-marketplace',
       ],
       'Updated Codex integration',
-      {
-        setup: (fake) => {
-          writeFileSync(
-            join(fake.homeDir, 'bin', 'codex'),
-            `#!/usr/bin/env sh
-printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
-if [ "$*" = "plugin list" ]; then
-  printf 'cc-safety-net@cc-marketplace installed, enabled\\n'
-fi
-`,
-          );
-        },
+      codexPluginListOptions('cc-safety-net@cc-marketplace installed, enabled', {
         assert: (_fake, result) => expectCodexTrustReminder(result),
-      },
+      }),
     );
   });
 
@@ -438,19 +480,9 @@ fi
         'codex plugin remove safety-net@cc-marketplace',
       ],
       'Updated Codex integration',
-      {
-        setup: (fake) => {
-          writeFileSync(
-            join(fake.homeDir, 'bin', 'codex'),
-            `#!/usr/bin/env sh
-printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
-if [ "$*" = "plugin list" ]; then
-  printf 'cc-safety-net@cc-marketplace installed, enabled\\nsafety-net@cc-marketplace installed, enabled\\n'
-fi
-`,
-          );
-        },
-      },
+      codexPluginListOptions(
+        'cc-safety-net@cc-marketplace installed, enabled\nsafety-net@cc-marketplace installed, enabled',
+      ),
     );
   });
 
@@ -465,19 +497,9 @@ fi
         'codex plugin remove safety-net@cc-marketplace',
       ],
       'Installed Codex integration',
-      {
-        setup: (fake) => {
-          writeFileSync(
-            join(fake.homeDir, 'bin', 'codex'),
-            `#!/usr/bin/env sh
-printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
-if [ "$*" = "plugin list" ]; then
-  printf 'safety-net@cc-marketplace https://github.com/kenryu42/cc-safety-net.git installed, disabled\\n'
-fi
-`,
-          );
-        },
-      },
+      codexPluginListOptions(
+        'safety-net@cc-marketplace https://github.com/kenryu42/cc-safety-net.git installed, disabled',
+      ),
     );
   });
 
@@ -491,19 +513,9 @@ fi
         'codex plugin add cc-safety-net@cc-marketplace',
       ],
       'Installed Codex integration',
-      {
-        setup: (fake) => {
-          writeFileSync(
-            join(fake.homeDir, 'bin', 'codex'),
-            `#!/usr/bin/env sh
-printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
-if [ "$*" = "plugin list" ]; then
-  printf 'Marketplace \`cc-marketplace\`\\ncc-safety-net@cc-marketplace not installed https://github.com/kenryu42/cc-safety-net.git\\n'
-fi
-`,
-          );
-        },
-      },
+      codexPluginListOptions(
+        'Marketplace `cc-marketplace`\ncc-safety-net@cc-marketplace not installed https://github.com/kenryu42/cc-safety-net.git',
+      ),
     );
   });
 
@@ -517,19 +529,7 @@ fi
         'codex plugin add cc-safety-net@cc-marketplace',
       ],
       'Installed Codex integration',
-      {
-        setup: (fake) => {
-          writeFileSync(
-            join(fake.homeDir, 'bin', 'codex'),
-            `#!/usr/bin/env sh
-printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
-if [ "$*" = "plugin list" ]; then
-  printf 'safety-net@cc-marketplace not installed /codex/plugins/safety-net\\n'
-fi
-`,
-          );
-        },
-      },
+      codexPluginListOptions('safety-net@cc-marketplace not installed /codex/plugins/safety-net'),
     );
   });
 
@@ -546,6 +546,7 @@ fi
       ],
       'Installed GitHub Copilot CLI integration',
       {
+        isolatedBin: true,
         setup: (fake) => {
           writeFileSync(
             join(fake.homeDir, 'bin', 'copilot'),
@@ -574,6 +575,7 @@ fi
       ],
       'Installed GitHub Copilot CLI integration',
       {
+        isolatedBin: true,
         setup: (fake) => {
           writeFileSync(
             join(fake.homeDir, 'bin', 'copilot'),
@@ -604,6 +606,7 @@ fi
       ],
       'Updated GitHub Copilot CLI integration',
       {
+        isolatedBin: true,
         setup: (fake) => {
           writeFileSync(
             join(fake.homeDir, 'bin', 'copilot'),
@@ -706,6 +709,7 @@ fi
       ],
       'Installed GitHub Copilot CLI integration',
       {
+        isolatedBin: true,
         setup: (fake) => {
           writeFileSync(
             join(fake.homeDir, 'bin', 'copilot'),
@@ -732,6 +736,7 @@ fi
       ],
       'Updated GitHub Copilot CLI integration',
       {
+        isolatedBin: true,
         setup: (fake) => {
           writeFileSync(
             join(fake.homeDir, 'bin', 'copilot'),
@@ -865,6 +870,7 @@ fi
       ['opencode plugin -g -f cc-safety-net@latest'],
       'Installed OpenCode integration',
       {
+        isolatedBin: true,
         setup: (fake) => {
           const cachePath = join(
             fake.homeDir,
@@ -875,11 +881,30 @@ fi
           );
           mkdirSync(cachePath, { recursive: true });
           writeFileSync(join(cachePath, 'stale.txt'), 'stale');
+          // `opencode plugin` reifies the package into the cache, and the install now refuses to
+          // report success without it, so the fake has to leave the same layout behind.
+          const packageDir = join(cachePath, 'node_modules', 'cc-safety-net');
+          writeFileSync(
+            join(fake.homeDir, 'bin', 'opencode'),
+            `#!/usr/bin/env sh
+printf '%s\\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
+mkdir -p '${packageDir}'
+printf '%s' '{"main":"index.js"}' > '${packageDir}/package.json'
+printf '%s' 'export const CCSafetyNetPlugin = () => {};' > '${packageDir}/index.js'
+`,
+          );
         },
         assert: (fake) => {
           expect(
             existsSync(
-              join(fake.homeDir, '.cache', 'opencode', 'packages', 'cc-safety-net@latest'),
+              join(
+                fake.homeDir,
+                '.cache',
+                'opencode',
+                'packages',
+                'cc-safety-net@latest',
+                'stale.txt',
+              ),
             ),
           ).toBe(false);
         },
@@ -1883,7 +1908,7 @@ describe('Amp artifact resolution', () => {
     const candidates = ampArtifactCandidates();
     expect(candidates.length).toBe(2);
     for (const candidate of candidates) {
-      expect(candidate.endsWith(join('amp', 'cc-safety-net.ts'))).toBe(true);
+      expect(candidate.endsWith(join('amp', 'cc-safety-net', 'index.ts'))).toBe(true);
     }
   });
 

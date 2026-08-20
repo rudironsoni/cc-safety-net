@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hermeticSafetyNetHome, runCCSafetyNetCli } from '../helpers.ts';
+import { Readable } from 'node:stream';
+import { printStatusline } from '@/cli/statusline';
+import {
+  captureConsoleOutput,
+  hermeticSafetyNetHome,
+  runCCSafetyNetCli,
+  withEnv,
+} from '../helpers.ts';
 
 const hermeticHome = hermeticSafetyNetHome('cc-safety-net-statusline-home-');
 
@@ -23,8 +30,14 @@ function clearEnv(): void {
 }
 
 async function runStatusline(env: Record<string, string>) {
-  const result = await runCCSafetyNetCli(['statusline', '--claude-code'], env);
-  return { output: result.output.trim(), exitCode: result.exitCode };
+  const result = await withEnv(env, () =>
+    captureConsoleOutput(() => printStatusline(Readable.from([]))),
+  );
+  return {
+    output: result.stdout.join('\n').trim(),
+    stderr: result.stderr.join('\n'),
+    exitCode: 0,
+  };
 }
 
 async function runStatuslineWithStdin(stdin: string, env: Record<string, string>) {
@@ -35,8 +48,10 @@ async function runStatuslineWithStdin(stdin: string, env: Record<string, string>
     stderr: 'pipe',
     env: { ...process.env, ...env },
   });
-  proc.stdin.write(stdin);
-  proc.stdin.end();
+  // The bounded reader destroys its stdin at the cap, so flushing an oversized
+  // payload can fail with EPIPE — the expected outcome, not a harness error.
+  await Promise.resolve(proc.stdin.write(stdin)).catch(() => {});
+  await Promise.resolve(proc.stdin.end()).catch(() => {});
   const output = await new Response(proc.stdout).text();
   return { output: output.trim(), exitCode: await proc.exited };
 }
@@ -304,7 +319,7 @@ describe('statusline enabled/disabled detection', () => {
     const settingsPath = join(tempDir, 'settings.json');
     await writeFile(settingsPath, '{ invalid json }');
 
-    const result = await runCCSafetyNetCli(['statusline', '--claude-code'], {
+    const result = await runStatusline({
       CLAUDE_SETTINGS_PATH: settingsPath,
       CC_SAFETY_NET_DEBUG: '1',
     });

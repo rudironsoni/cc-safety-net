@@ -169,9 +169,10 @@ policy-file protection scope.
 ### RR-8: Quoting-Concatenation and Analyzer-Marker Attacks
 
 Crafted quote concatenation aimed at analyzer internals, such as the sentinel-spoofing shape
-`rm -rf "$tmp" '__PREFIX_'SUFFIX__`. The archetype was fixed with regression coverage in
-`tests/analyzer/parsing-helpers.test.ts`; the family remains adversarial by construction, and
-standard mode makes no bypass-proof claim against deliberate quoting tricks. The same input causing
+`rm -rf "$tmp" '__PREFIX_'SUFFIX__`. The archetype was eliminated when the internal parser replaced
+sentinel-based quote rewriting; no sentinel markers exist in the analyzer today. The family remains
+adversarial by construction, and standard mode makes no bypass-proof claim against deliberate
+quoting tricks. The same input causing
 a strict or paranoid fail-open is never residual.
 
 Adjudicated 2026-07-22. Source: `docs/rm-temp-target-security-findings.md` section 1.

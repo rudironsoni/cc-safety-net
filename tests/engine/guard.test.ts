@@ -511,6 +511,38 @@ describe('guard evaluation', () => {
     });
   });
 
+  test('keeps deny paths and built-in secrets protected inside a destructive allow path', async () => {
+    await withTempDir('cc-safety-net-guard-allow-path-secret-', (cwd) => {
+      // A destructive allow path only relaxes the analyzer; it must never widen
+      // what the secret guard, which runs first, is willing to expose.
+      const guardDependencies = {
+        loadPolicySnapshot: () =>
+          policySnapshot({
+            destructiveCommandAllowPaths: ['/x'],
+            secretProtection: { enabled: true, denyPaths: ['/x/private'] },
+          }),
+        getModes: strictModes,
+      };
+
+      for (const [command, ruleId] of [
+        ['rm -rf /x/private', 'secret.deny-path'],
+        ['rm -rf /x/private/sub', 'secret.deny-path'],
+        ['rm -rf /x/.env', 'secret.basename.env'],
+      ] as const) {
+        expect(
+          evaluateGuard(commandInvocation(cwd, command), { dependencies: guardDependencies }),
+          command,
+        ).toMatchObject({ stage: 'secret-protection', decision: { kind: 'deny', ruleId } });
+      }
+
+      expect(
+        evaluateGuard(commandInvocation(cwd, 'rm -rf /x/other'), {
+          dependencies: guardDependencies,
+        }),
+      ).toEqual({ stage: 'command-analysis', level: 'strict', decision: { kind: 'allow' } });
+    });
+  });
+
   test('allows inert JavaScript inline secret data in standard mode', async () => {
     await withTempDir('cc-safety-net-guard-secret-inline-data-', (cwd) => {
       const command = `node -e 'const cases = ["cat .env", "Bun.file(\\".env\\")"]; for (const value of cases) console.log(value)'`;

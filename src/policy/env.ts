@@ -85,11 +85,10 @@ export function getCCSafetyNetEnvModes(
     paranoidRm: baseLevel === policyLevel ? 'preset' : 'environment',
     paranoidInterpreters: baseLevel === policyLevel ? 'preset' : 'environment',
   };
-  const sources: Record<Capability | 'worktreeMode', string[]> = {
+  const sources: Record<Capability, string[]> = {
     failClosed: [`policy safety.level=${policyLevel}`],
     paranoidRm: [`policy safety.level=${policyLevel}`],
     paranoidInterpreters: [`policy safety.level=${policyLevel}`],
-    worktreeMode: [],
   };
 
   if (baseLevel !== policyLevel) {
@@ -139,8 +138,6 @@ export function getCCSafetyNetEnvModes(
   }
 
   const worktreeMode = !!policy.worktreeMode || envTruthy(ENV_FLAGS.worktree);
-  if (policy.worktreeMode) sources.worktreeMode.push('policy workflow.worktree_mode');
-  if (envTruthy(ENV_FLAGS.worktree)) sources.worktreeMode.push(`env ${ENV_FLAGS.worktree.name}`);
 
   return {
     strict: values.failClosed,
@@ -165,7 +162,6 @@ export function getCCSafetyNetEnvModes(
         sources: sources.paranoidInterpreters,
       },
     },
-    sources,
   };
 }
 

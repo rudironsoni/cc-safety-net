@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { stripJsonComments } from '@/integrations/jsonc';
-import { uninstallOpenCode } from '@/integrations/opencode/install';
-import { makeTempHome } from '../hook-helpers';
+import { uninstallOpenCode, verifyOpenCodePluginRuntime } from '@/integrations/opencode/install';
+import { withEnv } from '../../helpers.ts';
+import { makeTempHome, runCli } from '../hook-helpers';
 
 function uninstallWithConfigs(name: string, files: Record<string, string>) {
   const homeDir = makeTempHome(name);
@@ -14,7 +15,9 @@ function uninstallWithConfigs(name: string, files: Record<string, string>) {
   }
 
   try {
-    const result = uninstallOpenCode(homeDir);
+    const result = withEnv({ XDG_CONFIG_HOME: undefined, XDG_CACHE_HOME: undefined }, () =>
+      uninstallOpenCode(homeDir),
+    );
     return {
       result,
       contents: Object.fromEntries(
@@ -222,5 +225,106 @@ describe('OpenCode uninstall config discovery', () => {
       path: join(configDir, 'opencode.json'),
       alreadyInstalled: false,
     });
+  });
+});
+
+describe('OpenCode XDG base directories', () => {
+  test('uninstall edits the XDG_CONFIG_HOME config and clears the XDG_CACHE_HOME package', () => {
+    const homeDir = makeTempHome('safety-net-opencode-xdg');
+    const configPath = join(homeDir, 'xdg-config', 'opencode', 'opencode.json');
+    mkdirSync(join(configPath, '..'), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ plugin: ['cc-safety-net@latest'] }));
+    const cacheDir = join(homeDir, 'xdg-cache', 'opencode', 'packages', 'cc-safety-net@latest');
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, 'marker'), 'cached');
+
+    try {
+      const result = withEnv(
+        {
+          XDG_CONFIG_HOME: join(homeDir, 'xdg-config'),
+          XDG_CACHE_HOME: join(homeDir, 'xdg-cache'),
+        },
+        () => uninstallOpenCode(homeDir),
+      );
+
+      expect(result).toEqual({ path: configPath, alreadyInstalled: true });
+      expect(readFileSync(configPath, 'utf-8')).not.toContain('cc-safety-net');
+      expect(existsSync(cacheDir)).toBeFalse();
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+/** The package layout `opencode plugin -g -f cc-safety-net@latest` leaves in the cache. */
+function writeOpenCodeCacheFixture(homeDir: string, entrySource: string) {
+  const packageDir = join(
+    homeDir,
+    '.cache',
+    'opencode',
+    'packages',
+    'cc-safety-net@latest',
+    'node_modules',
+    'cc-safety-net',
+  );
+  mkdirSync(packageDir, { recursive: true });
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ main: 'index.js' }));
+  writeFileSync(join(packageDir, 'index.js'), entrySource);
+  return packageDir;
+}
+
+function withCacheHome<T>(name: string, fn: (homeDir: string) => T) {
+  const homeDir = makeTempHome(name);
+  const cleanup = () => rmSync(homeDir, { recursive: true, force: true });
+  const result = withEnv({ XDG_CACHE_HOME: undefined }, () => fn(homeDir));
+  if (result instanceof Promise) return result.finally(cleanup) as T;
+  cleanup();
+  return result;
+}
+
+describe('OpenCode plugin runtime verification', () => {
+  test('fails when the install left no plugin package in the cache', () =>
+    withCacheHome('safety-net-opencode-runtime-missing', (homeDir) =>
+      expect(verifyOpenCodePluginRuntime(homeDir)).rejects.toThrow('missing its package'),
+    ));
+
+  test('fails when the cached entry does not export a callable plugin', () =>
+    withCacheHome('safety-net-opencode-runtime-broken', (homeDir) => {
+      writeOpenCodeCacheFixture(homeDir, 'export const CCSafetyNetPlugin = 42;\n');
+
+      return expect(verifyOpenCodePluginRuntime(homeDir)).rejects.toThrow(
+        'does not export a callable',
+      );
+    }));
+
+  test('accepts a cached entry whose plugin export is callable', () =>
+    withCacheHome('safety-net-opencode-runtime-loaded', (homeDir) => {
+      writeOpenCodeCacheFixture(homeDir, 'export const CCSafetyNetPlugin = () => {};\n');
+
+      return expect(verifyOpenCodePluginRuntime(homeDir)).resolves.toBeUndefined();
+    }));
+
+  // `opencode plugin` exiting 0 proves nothing: OpenCode fails open when a configured plugin
+  // cannot be loaded, so an install that never populated the cache must not report success.
+  test('fails the install when the plugin command left the cache empty', async () => {
+    const homeDir = makeTempHome('safety-net-opencode-runtime-cli');
+    const binDir = join(homeDir, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(binDir, 'opencode'), '#!/usr/bin/env sh\nexit 0\n');
+    chmodSync(join(binDir, 'opencode'), 0o755);
+
+    try {
+      const result = await runCli(['install', '--opencode'], '', {
+        HOME: homeDir,
+        PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
+        XDG_CONFIG_HOME: join(homeDir, '.config'),
+        XDG_CACHE_HOME: join(homeDir, '.cache'),
+      });
+
+      expect(result.stderr).toContain('missing its package');
+      expect(result.exitCode).toBe(1);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 });

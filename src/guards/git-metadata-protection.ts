@@ -41,8 +41,8 @@ export function findGitMetadataMutationTargetInSemanticFacts(
   ) {
     if (isReadOnlyTool(facts.invocation.toolName)) return null;
     const target = facts.paths.find((path) =>
-      isProtectedGitWriteTarget(path.raw, cwd, metadata, context),
-    )?.raw;
+      isProtectedGitWriteTarget(path, cwd, metadata, context),
+    );
     return target ? { target } : null;
   }
   if (facts.invocation.route.kind !== 'command') return null;

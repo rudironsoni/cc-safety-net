@@ -1,4 +1,4 @@
-import { analysisWordText, textCommandWords } from '@/analyzer/command-words';
+import { analysisWordText } from '@/analyzer/command-words';
 import {
   classifyRecursiveDeleteTarget,
   createRecursiveDeleteTargetContext,
@@ -39,11 +39,6 @@ export interface AnalyzeRmOptions extends RecursiveDeleteTargetOptions {
     'destructiveCommandProtectionEnabled' | 'destructiveCommandRuleOverrides'
   > &
     Partial<Pick<EffectivePolicy, 'destructiveCommandAllowPaths'>>;
-}
-
-/** @internal */
-export function analyzeRm(tokens: string[], options: AnalyzeRmOptions): string | null {
-  return analyzeRmMatch(textCommandWords(tokens), options)?.reason ?? null;
 }
 
 export function analyzeRmMatch(

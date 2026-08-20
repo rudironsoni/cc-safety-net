@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { readRecord } from '@/integrations/detect/context';
 import { atomicWriteFile } from '@/integrations/install/atomic-write';
 import {
   findMatchingBracket,
@@ -12,21 +14,68 @@ import { stripJsonComments } from '@/integrations/jsonc';
 const OPENCODE_PACKAGE = 'cc-safety-net';
 const OPENCODE_CACHE_PACKAGE = `${OPENCODE_PACKAGE}@latest`;
 const OPENCODE_CONFIG_FILES = ['opencode.json', 'opencode.jsonc'] as const;
+/** The plugin factory `src/index.ts` publishes and OpenCode loads from the package entry. */
+const OPENCODE_PLUGIN_EXPORT = 'CCSafetyNetPlugin';
+
+/**
+ * OpenCode derives its config root through `xdg-basedir`: `XDG_CONFIG_HOME` verbatim when set,
+ * else `<home>/.config`. An empty value falls back, matching the package's `||`.
+ */
+export function getOpenCodeConfigDir(homeDir: string) {
+  return join(process.env.XDG_CONFIG_HOME || join(homeDir, '.config'), 'opencode');
+}
 
 function getDefaultOpenCodeConfigPath(homeDir: string) {
-  return join(homeDir, '.config', 'opencode', OPENCODE_CONFIG_FILES[0]);
+  return join(getOpenCodeConfigDir(homeDir), OPENCODE_CONFIG_FILES[0]);
 }
 
 function getOpenCodeConfigPaths(homeDir: string) {
-  return OPENCODE_CONFIG_FILES.map((filename) => join(homeDir, '.config', 'opencode', filename));
+  return OPENCODE_CONFIG_FILES.map((filename) => join(getOpenCodeConfigDir(homeDir), filename));
 }
 
+/** Same derivation for OpenCode's package cache, from `XDG_CACHE_HOME`, else `<home>/.cache`. */
 function getOpenCodeCachePath(homeDir: string) {
-  return join(homeDir, '.cache', 'opencode', 'packages', OPENCODE_CACHE_PACKAGE);
+  return join(
+    process.env.XDG_CACHE_HOME || join(homeDir, '.cache'),
+    'opencode',
+    'packages',
+    OPENCODE_CACHE_PACKAGE,
+  );
 }
 
 export function clearOpenCodeCache(homeDir: string): void {
   rmSync(getOpenCodeCachePath(homeDir), { recursive: true, force: true });
+}
+
+/**
+ * Prove the plugin OpenCode just installed can actually load. OpenCode fails open: when a
+ * configured plugin cannot be installed, resolved or imported it publishes a session error and
+ * keeps going unprotected, so `opencode plugin` exiting 0 proves nothing about enforcement.
+ *
+ * This mirrors the host's own acceptance of an npm plugin: it reifies the package into
+ * `<cache>/packages/<spec>/node_modules/<name>`, resolves the entry from the package's `main`
+ * (this package ships no `./server` export) and requires the exported plugin to be callable.
+ */
+export async function verifyOpenCodePluginRuntime(homeDir: string): Promise<void> {
+  const packageDir = join(getOpenCodeCachePath(homeDir), 'node_modules', OPENCODE_PACKAGE);
+  const packageJsonPath = join(packageDir, 'package.json');
+  if (!existsSync(packageJsonPath)) {
+    throw new Error(
+      `The OpenCode plugin cache at ${packageDir} is missing its package, so OpenCode would load nothing and fail open. Run \`opencode plugin -g -f ${OPENCODE_CACHE_PACKAGE}\` for details.`,
+    );
+  }
+
+  const main = readRecord(JSON.parse(readFileSync(packageJsonPath, 'utf-8')), 'main');
+  if (typeof main !== 'string') {
+    throw new Error(`The cached OpenCode plugin at ${packageDir} declares no "main" entry.`);
+  }
+
+  const entry = join(packageDir, main);
+  const entryModule = (await import(pathToFileURL(entry).href)) as Record<string, unknown>;
+  if (typeof entryModule[OPENCODE_PLUGIN_EXPORT] === 'function') return;
+  throw new Error(
+    `The cached OpenCode plugin at ${entry} does not export a callable ${OPENCODE_PLUGIN_EXPORT}, so OpenCode would load nothing and fail open.`,
+  );
 }
 
 function skipJsonComment(content: string, index: number) {

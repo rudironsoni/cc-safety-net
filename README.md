@@ -9,21 +9,11 @@
 [![CI](https://github.com/kenryu42/cc-safety-net/actions/workflows/ci.yml/badge.svg)](https://github.com/kenryu42/cc-safety-net/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/kenryu42/cc-safety-net/branch/main/graph/badge.svg?token=C9QTION6ZF)](https://codecov.io/github/kenryu42/cc-safety-net)
 [![Version](https://img.shields.io/github/v/tag/kenryu42/cc-safety-net?label=version&color=blue)](https://github.com/kenryu42/cc-safety-net)
-[![Amp Code](https://img.shields.io/badge/Amp%20Code-467C51)](https://ccsafetynet.com/docs/installation#amp-code-installation)
-[![Antigravity CLI](https://img.shields.io/badge/Antigravity%20CLI-8AA1F8)](https://ccsafetynet.com/docs/installation#antigravity-cli-installation)
-[![Claude Code](https://img.shields.io/badge/Claude%20Code-D27656)](https://ccsafetynet.com/docs/installation#claude-code-installation)
-[![Codex](https://img.shields.io/badge/Codex-white)](https://ccsafetynet.com/docs/installation#codex-installation)
-[![Cursor](https://img.shields.io/badge/Cursor-000000)](https://ccsafetynet.com/docs/installation#cursor-installation)
-[![Gemini CLI](https://img.shields.io/badge/Gemini%20CLI-678AE3)](https://ccsafetynet.com/docs/installation#gemini-cli-installation)
-[![GitHub Copilot CLI](https://img.shields.io/badge/GitHub%20Copilot%20CLI-4EA5C9)](https://ccsafetynet.com/docs/installation#github-copilot-cli-installation)
-[![Hermes Agent](https://img.shields.io/badge/Hermes%20Agent-2D3E50)](#hermes-agent-and-openclaw)
-[![Kimi Code](https://img.shields.io/badge/Kimi%20Code-5587FF)](https://ccsafetynet.com/docs/installation#kimi-code-installation)
-[![OpenClaw](https://img.shields.io/badge/OpenClaw-B4532A)](#hermes-agent-and-openclaw)
-[![OpenCode](https://img.shields.io/badge/OpenCode-black)](https://ccsafetynet.com/docs/installation#opencode-installation)
-[![Pi](https://img.shields.io/badge/Pi%20Coding-22262E)](https://ccsafetynet.com/docs/installation#pi-installation)
 [![License: MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensource.org/licenses/MIT)
 
 <div align="center">
+
+**English** · [简体中文](https://ccsafetynet.com/docs/zh-Hans) · [日本語](https://ccsafetynet.com/docs/ja)
 
 [![CC Safety Net](./.github/assets/cc-safety-net-v2.png)](./.github/assets/cc-safety-net-v2.png)
 
@@ -46,7 +36,7 @@ We learned the [hard way](https://www.reddit.com/r/ClaudeAI/comments/1pgxckk/cla
 - **Rebuilt evaluation engine** — canonical command IR, deeply immutable policy snapshots, and an ordered guard pipeline with intrinsic decision tracing behind `explain`.
 - **Secret protection** — built-in rules block content access to SSH keys, `.env` files, cloud credentials, and coding-CLI credential stores, across shell commands and file tools alike.
 - **Always-on catastrophic protections** — recursive deletion of root or home, Git metadata mutation (`.git` control plane, hooks, worktrees, submodules), and mutation of the user policy file are blocked in every mode, regardless of overrides.
-- **Safety presets** — `standard`/`strict`/`paranoid` levels with per-rule overrides, trusted delete allow-paths, and env vars that can only raise protection.
+- **Safety presets** — `standard`/`strict`/`paranoid` levels with per-rule overrides, trusted delete allow-paths, and safety-level and capability env vars that can only raise protection — the one deliberate exception is `CC_SAFETY_NET_WORKTREE`, which allows local git discards in linked worktrees.
 - **Policy GUI** — `cc-safety-net gui` serves a local, token-authenticated editor with live preset preview.
 - **Universal installer** — interactive `install`/`uninstall` across all twelve supported agent CLIs, with an `update` command for installed integrations.
 - **Command-decision audit trail** — allowed and blocked command decisions recorded by default to local per-project JSONL with secret redaction, retained for 30 days by default, browsable via `cc-safety-net logs`.
@@ -84,83 +74,30 @@ npm install -g cc-safety-net
 ccsn doctor
 ```
 
-CC Safety Net works across twelve coding agent CLIs — **Claude Code, Antigravity CLI, Codex, Gemini CLI, GitHub Copilot CLI, Kimi Code, OpenCode, Pi, Cursor, Amp Code, Hermes Agent, and OpenClaw** — on **Windows, macOS, and Linux** (the Hermes Agent and OpenClaw integrations are macOS and Linux only; see [Hermes Agent and OpenClaw](#hermes-agent-and-openclaw)). Per-agent instructions, the target flags for scripted non-interactive installs, post-install steps, and per-agent caveats are on [Installation](https://ccsafetynet.com/docs/installation); how each integration hooks its agent is on [Integration Architecture](https://ccsafetynet.com/docs/guides/integration-architecture).
+## Supported coding CLIs
 
-## Hermes Agent and OpenClaw
+CC Safety Net works across all coding agent CLIs on **Windows, macOS, and Linux**. Windows is covered by automated tests for the analyzer and a subset of integrations; for the remaining hosts it is best-effort and untested, and Amp's own manual documents macOS, Linux, and WSL rather than native Windows.
 
-These two integrations are newer than the docs site, so their setup steps and coverage
-boundaries live here.
-
-```bash
-# Hermes Agent — installs a managed Python plugin, then restart Hermes
-npx -y cc-safety-net@latest install --hermes-agent
-npx -y cc-safety-net@latest uninstall --hermes-agent
-
-# OpenClaw — installs a bundled plugin through OpenClaw's own CLI, then restart the Gateway
-npx -y cc-safety-net@latest install --openclaw
-npx -y cc-safety-net@latest uninstall --openclaw
-```
-
-Run `npx cc-safety-net doctor` after either install: it is the only surface that reports a plugin
-that is present but not enabled, not ours, or out of date. It reads disk and config only and never
-asks a running host whether the plugin loaded, so a stopped OpenClaw Gateway is not reported as a
-failure — the OpenClaw install verifies the load itself.
-
-**Hermes Agent.** Install writes a managed plugin to `$HERMES_HOME/plugins/cc-safety-net/`
-(`~/.hermes` when `HERMES_HOME` is unset) and then
-runs `hermes plugins enable cc-safety-net --no-allow-tool-override`. It is an ordinary Hermes user
-plugin: it runs inside the Hermes process with the trust Hermes grants user plugins, and it is
-inert until Hermes is restarted. On every `pre_tool_call` it shells out to
-`npx -y cc-safety-net hook --hermes-agent` with a 30-second timeout, and blocks the call itself
-whenever that analysis cannot complete — missing `npx`, spawn failure, timeout, unreadable output,
-or a Hermes session directory it cannot read.
-Protected tools are `terminal`, `read_file`, `write_file`, and `patch`; calls to any other Hermes
-tool are not forwarded and get no decision. Uninstall runs `hermes plugins disable cc-safety-net`
-first — Hermes only resolves a plugin that is still on disk — and then removes the managed files,
-so the config entry goes with them; a failing or missing `hermes` is reported as a warning and the
-files are removed anyway.
-
-**OpenClaw.** Install runs `openclaw plugins install <bundled plugin dir> --force` followed by
-`openclaw plugins enable cc-safety-net`, then verifies the plugin actually loaded. **Restart the
-OpenClaw Gateway afterwards, and if `plugins.allow` is set in `openclaw.json` it must also list
-`cc-safety-net`** — until both are true the plugin never runs and nothing is blocked. The plugin
-registers `before_tool_call` for the canonical `exec` tool only and returns a plain allow or
-block; it never rewrites tool parameters. It resolves the agent workspace as the policy and
-execution directory, and denies a call whose `workdir` resolves outside that workspace or whose
-agent or workspace context cannot be established. Live end-to-end tests (`bun run test:e2e:live`,
-run before a release) drive the real `openclaw` binary against a throwaway state directory: our
-CLI installs the plugin, the host reports it loaded with the hook registered, and a real Gateway
-agent turn puts a real `exec` call through it — a harmless command runs, `git reset --hard` is
-blocked before it can touch the workspace.
-
-**What is not covered.**
-
-- **Hermes bang-shell.** A `!command` you type yourself does not raise `pre_tool_call`; it goes
-  straight to Hermes' own command guard. CC Safety Net sees model-generated tool calls only, not
-  every subprocess Hermes starts.
-- **Hermes shell hooks fail open.** Hermes' `hooks:` dispatcher allows the tool call when a hook
-  cannot start, times out, or returns unparseable output. That is why the shipped integration is
-  the Python plugin, which blocks on its own failures, and why `hooks:` is a diagnostic path only.
-  One case stays outside our reach either way: if Hermes never loads the plugin, nothing blocks
-  and only `doctor` will say so.
-- **OpenClaw execution hosts.** `exec` calls with no `host`, `host: "auto"`, or `host: "gateway"`
-  are analysed as local Gateway calls. Explicit `host: "sandbox"` and `host: "node"` are blocked
-  as unsupported, because no test proves a correct path mapping for them. When a sandbox runtime
-  is active, an `auto` call runs in the sandbox filesystem while paths are still analysed against
-  the Gateway workspace — command rules are unaffected, path rules can be evaluated against the
-  wrong filesystem. The same applies when a call carries no `host` and your configured
-  `tools.exec.host` default is `node` or `sandbox`: the call is still analysed as a local Gateway
-  call.
-- **OpenClaw Codex-native relay.** Untested, and therefore unclaimed. The live end-to-end tests
-  drive OpenClaw's own agent runtime, so they say nothing about a Codex-native shell, patch, or
-  MCP call.
-- **OpenClaw file tools.** `apply_patch` and OpenClaw's read/write/edit tools are not protected;
-  only `exec` is.
-- **Windows.** Both integrations assume the POSIX layout. Relocated state is handled the way the
-  hosts resolve it — `HERMES_HOME` for Hermes, then `OPENCLAW_STATE_DIR` and the directory of
-  `OPENCLAW_CONFIG_PATH` for OpenClaw, falling back to `~/.hermes` and `~/.openclaw`. The Windows
-  defaults are not: install and detection target the POSIX path there, so Hermes writes to the
-  wrong directory and OpenClaw's own CLI installs correctly while `doctor` misreports the state.
+<table align="center">
+  <tr>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#amp-code-installation"><picture><source media="(prefers-color-scheme: dark)" srcset="./.github/assets/amp-dark.svg"><img alt="Amp Code" src="./.github/assets/amp-light.svg" height="32"></picture><br>Amp Code</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#antigravity-cli-installation"><img alt="Antigravity CLI" src="./.github/assets/antigravity-cli.png" height="32"><br>Antigravity CLI</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#claude-code-installation"><img alt="Claude Code" src="./.github/assets/claude-code.svg" height="32"><br>Claude Code</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#codex-installation"><img alt="Codex" src="./.github/assets/codex.svg" height="32"><br>Codex</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#cursor-installation"><picture><source media="(prefers-color-scheme: dark)" srcset="./.github/assets/cursor-dark.svg"><img alt="Cursor" src="./.github/assets/cursor-light.svg" height="32"></picture><br>Cursor</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#gemini-cli-installation"><img alt="Gemini CLI" src="./.github/assets/gemini-cli.svg" height="32"><br>Gemini CLI</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#github-copilot-cli-installation"><picture><source media="(prefers-color-scheme: dark)" srcset="./.github/assets/copilot-cli-dark.svg"><img alt="GitHub Copilot CLI" src="./.github/assets/copilot-cli-light.svg" height="32"></picture><br>GitHub Copilot CLI</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#hermes-agent-installation"><img alt="Hermes Agent" src="./.github/assets/hermes.png" height="32"><br>Hermes Agent</a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#kimi-code-installation"><img alt="Kimi Code" src="./.github/assets/kimi-cli.png" height="32"><br>Kimi Code</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#openclaw-installation"><img alt="OpenClaw" src="./.github/assets/openclaw.png" height="32"><br>OpenClaw</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#opencode-installation"><picture><source media="(prefers-color-scheme: dark)" srcset="./.github/assets/opencode-dark.svg"><img alt="OpenCode" src="./.github/assets/opencode-light.svg" height="32"></picture><br>OpenCode</a></td>
+    <td align="center"><a href="https://ccsafetynet.com/docs/installation#pi-installation"><picture><source media="(prefers-color-scheme: dark)" srcset="./.github/assets/pi-dark.svg"><img alt="Pi" src="./.github/assets/pi-light.svg" height="32"></picture><br>Pi</a></td>
+  </tr>
+</table>
 
 ## What it does
 
@@ -190,7 +127,7 @@ Set a session safety preset with `CC_SAFETY_NET_LEVEL=standard|strict|paranoid`:
 | Strict | Standard, plus blocks dynamic or unparseable commands the analyzer cannot verify safely and metadata-only discovery of built-in sensitive paths. Occasional false positives on advanced shell. |
 | Paranoid | Strict, plus blocks `rm -rf` inside your project and interpreter one-liners. Expect friction; for untrusted agents or high-stakes repos. |
 
-Presets supply inherited defaults; `policy.json` stores only your explicit deviations — per-rule overrides, allow paths, deny paths, worktree mode, and audit retention. Environment variables can only raise protection, never lower it. The full contract is on [Modes](https://ccsafetynet.com/docs/configuration/modes), [Policy](https://ccsafetynet.com/docs/configuration/policy), and [Environment](https://ccsafetynet.com/docs/configuration/environment), or edit everything visually with the [local GUI](https://ccsafetynet.com/docs/guides/dashboard).
+Presets supply inherited defaults; `policy.json` stores only your explicit deviations — per-rule overrides, allow paths, deny paths, worktree mode, and audit retention. Safety-level and capability environment variables can only raise protection, never lower it; the one deliberate relaxation is `CC_SAFETY_NET_WORKTREE`, which enables worktree mode to allow local git discards in linked worktrees. The full contract is on [Modes](https://ccsafetynet.com/docs/configuration/modes), [Policy](https://ccsafetynet.com/docs/configuration/policy), and [Environment](https://ccsafetynet.com/docs/configuration/environment), or edit everything visually with the [local GUI](https://ccsafetynet.com/docs/guides/dashboard).
 
 ## Diagnostics and tracing
 
@@ -215,6 +152,8 @@ Details: [CLI Commands](https://ccsafetynet.com/docs/reference/cli-commands) · 
 
 CC Safety Net denies a tool call before it runs; it does not enforce filesystem permissions, inspect network egress, or contain a process. Two v2 bounds worth knowing up front: the policy and sensitive-path command extractors remain primarily POSIX-oriented, so native PowerShell path expressions such as `Get-Content $HOME\.ssh\id_rsa` can evade static path extraction; and policy-file protection is a best-effort exact-path guard, not command emulation. Use operating-system permissions, a sandbox, or equivalent runtime enforcement when complete protection is required.
 
+One integration-specific bound: Codex's unified exec path, the default on macOS and Linux, sends a hook payload when a command starts a session but none for `write_stdin`. Text the model types into an already-running interactive session is therefore never inspected and never audited — only the command that opened the session is. The host emits no event for that call, so no adapter change can close it.
+
 The full residual-risk registry lives in [SECURITY.md](SECURITY.md); the practical consequences are on [Known Limitations](https://ccsafetynet.com/docs/guides/known-limitations).
 
 ## Upgrading from an older version
@@ -226,7 +165,7 @@ npx -y cc-safety-net@latest update
 ```
 
 > [!WARNING]
-> If you previously defined custom rules in a legacy inline config (`.safety-net.json` or `~/.cc-safety-net/config.json`), those files are **no longer loaded at runtime** and **their rules are not enforcing anything**. Nothing is blocked, so you will not notice this from normal use — the commands those rules used to block now run. Run `npx -y cc-safety-net rule migrate` to convert them to the rulebook layout, then `npx -y cc-safety-net doctor` to confirm the runtime is `ready`. See the [migration guide](https://ccsafetynet.com/docs/configuration/custom-rules#migration-from-legacy-config).
+> If you previously defined custom rules in a legacy inline config (`.safety-net.json` or `~/.cc-safety-net/config.json`), those files are **no longer loaded at runtime** and **their rules are not enforcing anything**. Nothing is blocked, so you will not notice this from normal use — the commands those rules used to block now run. Run `npx -y cc-safety-net rule migrate` to convert them to the rulebook layout, then `npx -y cc-safety-net doctor` to confirm the runtime is `ready`. See the [migration guide](https://ccsafetynet.com/docs/configuration/custom-rules#migrate-legacy-configuration).
 
 ## Full documentation
 
@@ -244,10 +183,10 @@ All details live on the docs site at **[ccsafetynet.com/docs](https://ccsafetyne
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details on how to contribute to this project.
 
-Generated distribution ownership is intentionally narrow. Only `dist/index.js`,
-`dist/index.d.ts`, `dist/bin/cc-safety-net.js`, and `dist/pi/index.js` are tracked. Run
-`bun run verify:build`, `bun run verify:package`, and `bun run verify:repository-plugin` when
-changing packaging, integrations, or release automation.
+The generated distribution is committed: all 11 files under `dist/` are tracked — the library
+bundle and its type declarations, the CLI entrypoint, the shared chunks, the vendored Zod copy,
+and the Pi, Amp and OpenClaw adapter files. Run `bun run verify:package` and
+`bun run verify:repository-plugin` when changing packaging, integrations, or release automation.
 
 ## License
 

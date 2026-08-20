@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { writeAuditLog } from '@/engine/audit';
 import { pruneExpiredAuditLogs } from '@/engine/audit-retention';
 import { listAuditLogFiles } from '@/engine/audit-scan';
+import { withEnv } from '../helpers';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = new Date('2026-07-26T12:00:00.000Z');
@@ -96,6 +97,25 @@ describe('pruneExpiredAuditLogs dated layout', () => {
 
       expect(existsSync(recent)).toBe(true);
       expect(existsSync(future)).toBe(true);
+    });
+  });
+
+  test('honors a retention window configured shorter than the default', () => {
+    withLogsDir((logsDir, homeDir) => {
+      const safetyNetHome = join(homeDir, '.cc-safety-net');
+      writeFileSync(
+        join(safetyNetHome, 'policy.json'),
+        JSON.stringify({ audit: { retention_days: 5 } }),
+      );
+      // Both days sit inside the 30-day default window, so only the configured
+      // five-day window can decide between them.
+      const expired = writeDatedLog(logsDir, '2026-07-16');
+      const retained = writeDatedLog(logsDir, '2026-07-24', 's2');
+
+      withEnv({ CC_SAFETY_NET_HOME: safetyNetHome }, () => pruneExpiredAuditLogs(logsDir, now));
+
+      expect(existsSync(expired)).toBe(false);
+      expect(existsSync(retained)).toBe(true);
     });
   });
 

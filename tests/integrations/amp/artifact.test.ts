@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AMP_HOST_SCRIPT } from '../../../scripts/integration-host-scripts';
 
-const ARTIFACT = resolve('dist/amp/cc-safety-net.ts');
+const ARTIFACT = resolve('dist/amp/cc-safety-net/index.ts');
 
 // A mocked Amp host loads the built plugin artifact, registers the handler, and
 // runs one call. The artifact is the exact file the installer copies, so this

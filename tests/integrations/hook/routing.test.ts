@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  findHookIntegrationByFlag,
+  findLegacyTopLevelHookIntegration,
+} from '@/cli/hook-integrations';
 import { getAntigravityCliToolRoute } from '@/integrations/antigravity-cli/hook';
 import { getClaudeCodeToolRoute } from '@/integrations/claude-code/hook';
 import { getCopilotCliToolRoute } from '@/integrations/copilot-cli/hook';
@@ -53,6 +57,7 @@ describe('hook command routing', () => {
       getKimiCodeToolRoute('bash'),
       getCopilotCliToolRoute('bash'),
       getCopilotCliToolRoute('Bash'),
+      getCopilotCliToolRoute('powershell'),
       getCopilotCliToolRoute('PowerShell'),
       getAntigravityCliToolRoute('run_command'),
       getAntigravityCliToolRoute('Run_Command'),
@@ -66,7 +71,8 @@ describe('hook command routing', () => {
       { kind: 'unknown' },
       { kind: 'command', shell: 'auto' },
       { kind: 'command', shell: 'auto' },
-      { kind: 'unknown' },
+      { kind: 'command', shell: 'powershell' },
+      { kind: 'command', shell: 'powershell' },
       { kind: 'command', shell: 'auto' },
       { kind: 'unknown' },
     ]);
@@ -260,17 +266,43 @@ describe('hook command routing', () => {
 
   test('each hook format keeps real subprocess transport coverage', async () => {
     for (const hook of [
-      { flag: '--coding-cli', format: 'claude-code' as const, input: claudeCodeBashInput },
-      { flag: '-gc', format: 'gemini-cli' as const, input: geminiShellInput },
-      { flag: '-kc', format: 'kimi-code' as const, input: kimiShellInput },
-      { flag: '-cp', format: 'copilot-cli' as const, input: copilotBashInput },
-      { flag: '-ac', format: 'antigravity-cli' as const, input: antigravityShellInput },
+      {
+        flag: '--coding-cli',
+        format: 'claude-code' as const,
+        input: claudeCodeBashInput,
+        run: runClaudeCodeHook,
+      },
+      {
+        flag: '-gc',
+        format: 'gemini-cli' as const,
+        input: geminiShellInput,
+        run: runGeminiHook,
+      },
+      {
+        flag: '-kc',
+        format: 'kimi-code' as const,
+        input: kimiShellInput,
+        run: runKimiHook,
+      },
+      {
+        flag: '-cp',
+        format: 'copilot-cli' as const,
+        input: copilotBashInput,
+        run: runCopilotHook,
+      },
+      {
+        flag: '-ac',
+        format: 'antigravity-cli' as const,
+        input: antigravityShellInput,
+        run: runAntigravityHook,
+      },
     ]) {
-      const [allowed, denied, malformed] = await Promise.all([
-        runCli(['hook', hook.flag], JSON.stringify(hook.input('git status'))),
-        runCli(['hook', hook.flag], JSON.stringify(hook.input('git reset --hard'))),
-        runCli(['hook', hook.flag], '{'),
-      ]);
+      const allowed = await hook.run(hook.input('git status'));
+      const denied = await runCli(
+        ['hook', hook.flag],
+        JSON.stringify(hook.input('git reset --hard')),
+      );
+      const malformed = await hook.run('{');
 
       expect(allowed).toMatchObject({ exitCode: 0, stdout: '' });
       expect(getHookDenyReason(denied, hook.format)).toContain('git reset --hard');
@@ -311,13 +343,9 @@ describe('hook command routing', () => {
     }
   });
 
-  test.each([
-    ['legacy top-level --claude-code', ['--claude-code']],
-    ['legacy nested --claude-code', ['hook', '--claude-code']],
-    ['top-level Coding CLI -cc', ['-cc']],
-  ])('%s alias routes to the hook command', async (_name, args) => {
+  test('legacy top-level --claude-code alias routes to the hook command', async () => {
     const { stdout, exitCode } = await runCli(
-      args,
+      ['--claude-code'],
       JSON.stringify(claudeCodeBashInput('git reset --hard')),
     );
 
@@ -326,6 +354,14 @@ describe('hook command routing', () => {
     expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse');
     expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
     expect(output.hookSpecificOutput.permissionDecisionReason).toContain('git reset --hard');
+  });
+
+  test('legacy nested --claude-code alias resolves to the Coding CLI hook', () => {
+    expect(findHookIntegrationByFlag(['--claude-code'])?.id).toBe('claude-code');
+  });
+
+  test('top-level Coding CLI -cc alias resolves to the Coding CLI hook', () => {
+    expect(findLegacyTopLevelHookIntegration('-cc')?.id).toBe('claude-code');
   });
 
   test('canonical --coding-cli flag requires the hook command', async () => {
@@ -342,19 +378,19 @@ describe('hook command routing', () => {
 
       // An unreadable policy filesystem degrades to protective defaults rather than
       // denying every command, so an ordinary command still passes with no output.
-      const { stdout, exitCode } = await runCli(
-        ['hook', '--coding-cli'],
-        JSON.stringify({ ...claudeCodeBashInput('echo ok'), cwd }),
-      );
+      const { stdout, exitCode } = await runClaudeCodeHook({
+        ...claudeCodeBashInput('echo ok'),
+        cwd,
+      });
 
       expect(exitCode).toBe(0);
       expect(stdout).toBe('');
 
       // The built-in protections the fallback carries keep denying.
-      const denied = await runCli(
-        ['hook', '--coding-cli'],
-        JSON.stringify({ ...claudeCodeBashInput('git reset --hard'), cwd }),
-      );
+      const denied = await runClaudeCodeHook({
+        ...claudeCodeBashInput('git reset --hard'),
+        cwd,
+      });
 
       expect(denied.exitCode).toBe(0);
       expect(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
@@ -363,35 +399,16 @@ describe('hook command routing', () => {
     }
   });
 
-  test('top-level non-Claude hook flags route to hook command for compatibility', async () => {
-    const { stdout, exitCode } = await runCli(
-      ['-gc'],
-      JSON.stringify(geminiShellInput('git reset --hard')),
-    );
-
-    const output = JSON.parse(stdout);
-    expect(exitCode).toBe(0);
-    expect(output.decision).toBe('deny');
-    expect(output.reason).toContain('git reset --hard');
+  test('top-level non-Claude hook flags resolve to the hook command for compatibility', () => {
+    expect(findLegacyTopLevelHookIntegration('-gc')?.id).toBe('gemini-cli');
   });
 
-  test('Kimi Code routes through hook command only', async () => {
-    const { stdout, exitCode } = await runCli(
-      ['hook', '--kimi-code'],
-      JSON.stringify(kimiShellInput('git status')),
-    );
-
-    expect(exitCode).toBe(0);
-    expect(stdout).toBe('');
+  test('Kimi Code resolves through hook command only', () => {
+    expect(findHookIntegrationByFlag(['--kimi-code'])?.id).toBe('kimi-code');
   });
 
-  test('Antigravity CLI routes through hook command only', async () => {
-    const result = await runCli(
-      ['hook', '--agy-cli'],
-      JSON.stringify(antigravityShellInput('git reset --hard')),
-    );
-
-    expect(getHookDenyReason(result, 'antigravity-cli')).toContain('git reset --hard');
+  test('Antigravity CLI resolves through hook command only', () => {
+    expect(findHookIntegrationByFlag(['--agy-cli'])?.id).toBe('antigravity-cli');
   });
 
   test('hook kimi-code is not a platform subcommand', async () => {
@@ -415,24 +432,14 @@ describe('hook command routing', () => {
     expect(stdout).toBe('');
   });
 
-  test('top-level Kimi Code flags are not legacy compatibility aliases', async () => {
-    const longFlag = await runCli(['--kimi-code']);
-    const shortFlag = await runCli(['-kc']);
-
-    expect(longFlag.exitCode).toBe(1);
-    expect(longFlag.stderr).toContain('Unknown option: --kimi-code');
-    expect(shortFlag.exitCode).toBe(1);
-    expect(shortFlag.stderr).toContain('Unknown option: -kc');
+  test('top-level Kimi Code flags are not legacy compatibility aliases', () => {
+    expect(findLegacyTopLevelHookIntegration('--kimi-code')).toBeUndefined();
+    expect(findLegacyTopLevelHookIntegration('-kc')).toBeUndefined();
   });
 
-  test('top-level Antigravity CLI flags are not legacy compatibility aliases', async () => {
-    const longFlag = await runCli(['--agy-cli']);
-    const shortFlag = await runCli(['-ac']);
-
-    expect(longFlag.exitCode).toBe(1);
-    expect(longFlag.stderr).toContain('Unknown option: --agy-cli');
-    expect(shortFlag.exitCode).toBe(1);
-    expect(shortFlag.stderr).toContain('Unknown option: -ac');
+  test('top-level Antigravity CLI flags are not legacy compatibility aliases', () => {
+    expect(findLegacyTopLevelHookIntegration('--agy-cli')).toBeUndefined();
+    expect(findLegacyTopLevelHookIntegration('-ac')).toBeUndefined();
   });
 
   test('does not route nested legacy hook flags outside the hook command', async () => {

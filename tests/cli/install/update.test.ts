@@ -1,14 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
+import { runUpdateCommand } from '@/cli/install';
 import { AMP_MANAGED_HEADER } from '@/integrations/amp/artifact';
 import { getCursorHooksPath } from '@/integrations/cursor/install';
+import { captureConsoleOutput, withEnv } from '../../helpers';
 import { makeTempHome, runCli } from '../../integrations/hook-helpers';
 import {
   makeLoggedFakeCommandHome,
   writeClaudePluginRecords,
   writeFakeCommands,
 } from '../../integrations/install/install-test-helpers';
+import { createLolcatOutput, stripAnsi } from '../lolcat-test-helpers';
 
 function writeCursorHook(homeDir: string) {
   const path = getCursorHooksPath(homeDir);
@@ -50,12 +53,7 @@ function normalizedCommandLog(logPath: string): string[] {
 
 async function expectUpdateFindsNothing(homeDir: string, cwd?: string) {
   try {
-    const result = await runCli(
-      ['update'],
-      '',
-      { HOME: homeDir, PATH: dirname(process.execPath) },
-      cwd,
-    );
+    const result = await runUpdate({ homeDir, path: dirname(process.execPath), cwd });
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(
@@ -66,12 +64,50 @@ async function expectUpdateFindsNothing(homeDir: string, cwd?: string) {
   }
 }
 
-function runUpdate(options: { homeDir: string; path: string; logPath?: string }) {
-  return runCli(['update'], '', {
-    HOME: options.homeDir,
-    PATH: options.path,
-    ...(options.logPath ? { CC_SAFETY_NET_TEST_COMMAND_LOG: options.logPath } : {}),
-  });
+let directUpdateQueue = Promise.resolve();
+
+function runUpdate(options: {
+  homeDir: string;
+  path: string;
+  logPath?: string;
+  cwd?: string;
+  isTTY?: boolean;
+}) {
+  const execute = async () => {
+    const originalCwd = process.cwd();
+    // A non-TTY input keeps the banner off the real stdin (no raw mode, no keypress listener).
+    const { chunks, output } = createLolcatOutput(options.isTTY ?? false);
+    try {
+      if (options.cwd) process.chdir(options.cwd);
+      const { result, stderr } = await captureConsoleOutput(() =>
+        withEnv(
+          {
+            HOME: options.homeDir,
+            PATH: options.path,
+            ...(options.logPath ? { CC_SAFETY_NET_TEST_COMMAND_LOG: options.logPath } : {}),
+          },
+          () =>
+            runUpdateCommand([], {
+              input: { isTTY: false } as unknown as NodeJS.ReadStream,
+              output: output as unknown as NodeJS.WriteStream,
+            }),
+        ),
+      );
+      return {
+        exitCode: result,
+        stdout: stripAnsi(chunks.join('')).trimEnd(),
+        stderr: stderr.join('\n'),
+      };
+    } finally {
+      process.chdir(originalCwd);
+    }
+  };
+  const result = directUpdateQueue.then(execute);
+  directUpdateQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 async function expectCodexLegacyMigration(fake: ReturnType<typeof makeFakeBinHome>) {
@@ -82,12 +118,12 @@ async function expectCodexLegacyMigration(fake: ReturnType<typeof makeFakeBinHom
     expect(normalizedCommandLog(fake.logPath)).toEqual([
       'codex plugin list',
       'codex --version',
-      'codex plugin list',
       'codex plugin marketplace add kenryu42/cc-marketplace',
       'codex plugin add cc-safety-net@cc-marketplace',
       'codex plugin remove safety-net@cc-marketplace',
     ]);
     expect(result.stdout).toContain('Updated Codex integration');
+    expect(result.stderr).toBe('');
   } finally {
     rmSync(fake.homeDir, { recursive: true, force: true });
   }
@@ -359,25 +395,23 @@ fi
         '  "plugins repositories") printf \'[{"scope":"user","exists":true,"viewerCanWrite":true,"cloneRef":"tester/-/plugins"}]\\n\' ;;',
         'esac',
       ].join('\n'),
-      // Only `git status --porcelain` needs a real answer: the modified `cc-safety-net.ts` entry
+      // Only `git status --porcelain` needs a real answer: the modified directory-plugin entry
       // means the artifact is staged, so `commitAndPush` proceeds to commit and push.
       git: [
         'case "$1 $2" in',
-        '  "status --porcelain") printf \'%s\\n\' "M  cc-safety-net.ts" ;;',
+        '  "status --porcelain") printf \'%s\\n\' "M  cc-safety-net/index.ts" ;;',
         'esac',
       ].join('\n'),
     });
 
     try {
-      const result = await runCli(['update'], '', {
-        HOME: homeDir,
-        PATH: [binDir, dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter),
+      const result = await runUpdate({
+        homeDir,
+        path: [binDir, dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter),
       });
 
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain(
-        'Updated Amp Code plugin at tester/-/plugins/cc-safety-net.ts',
-      );
+      expect(result.stdout).toContain('Updated Amp Code plugin at tester/-/plugins/cc-safety-net');
       expect(result.stdout).toContain('including Orb threads');
       expect(existsSync(maskingPath)).toBe(false);
     } finally {
@@ -422,6 +456,112 @@ fi
       );
       expect(result.stderr).toContain('claude plugin marketplace update cc-marketplace');
       expect(result.stdout).toContain('Updated Codex integration');
+    } finally {
+      rmSync(fake.homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('updates independent targets concurrently', async () => {
+    const fake = makeFakeBinHome('safety-net-update-parallel', ['claude', 'codex']);
+    writeClaudePluginRecords(fake.homeDir, ['cc-safety-net@cc-marketplace'], {
+      enableByDefault: true,
+    });
+    // Claude Code runs before Codex in canonical order, and here it only finishes once Codex
+    // signals that it started, so this passes only when the two targets run concurrently.
+    writeFileSync(
+      join(fake.homeDir, 'bin', 'claude'),
+      `#!/usr/bin/env sh
+printf '%s\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
+if [ "$*" = "plugin marketplace update cc-marketplace" ]; then
+  i=0
+  while [ $i -lt 50 ]; do
+    if [ -f "$HOME/.codex-running" ]; then
+      exit 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  exit 42
+fi
+`,
+    );
+    writeFileSync(
+      join(fake.homeDir, 'bin', 'codex'),
+      `#!/usr/bin/env sh
+printf '%s\n' "$0 $*" >> "$CC_SAFETY_NET_TEST_COMMAND_LOG"
+if [ "$*" = "plugin list" ]; then
+  printf 'cc-safety-net@cc-marketplace https://github.com/kenryu42/cc-safety-net.git installed, enabled\n'
+fi
+if [ "$*" = "plugin marketplace upgrade cc-marketplace" ]; then
+  touch "$HOME/.codex-running"
+fi
+`,
+    );
+
+    try {
+      const result = await runUpdate(fake);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('Updated Claude Code integration');
+      expect(result.stdout).toContain('Updated Codex integration');
+    } finally {
+      rmSync(fake.homeDir, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  test('clears a stale npx cache entry while updating', async () => {
+    const homeDir = makeTempHome('safety-net-update-npx-cache');
+    writeCursorHook(homeDir);
+    const cacheEntry = join(homeDir, '.npm', '_npx', 'a1b2c3');
+    mkdirSync(join(cacheEntry, 'node_modules', 'cc-safety-net'), { recursive: true });
+
+    try {
+      const result = await runUpdate({ homeDir, path: dirname(process.execPath) });
+
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(cacheEntry)).toBe(false);
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('fails only npx-cache targets when the cache cannot be cleared', async () => {
+    const fake = makeFakeBinHome('safety-net-update-npx-clear-failure', ['claude']);
+    writeCursorHook(fake.homeDir);
+    writeClaudePluginRecords(fake.homeDir, ['cc-safety-net@cc-marketplace'], {
+      enableByDefault: true,
+    });
+    // A file where the cache directory belongs: existsSync passes, readdirSync throws ENOTDIR.
+    mkdirSync(join(fake.homeDir, '.npm'), { recursive: true });
+    writeFileSync(join(fake.homeDir, '.npm', '_npx'), 'not a directory');
+
+    try {
+      const result = await runUpdate(fake);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toContain('Updated Claude Code integration');
+      expect(result.stdout).not.toContain('Cursor hook up to date');
+      expect(result.stderr).toContain('Check that every parent path component is a directory');
+    } finally {
+      rmSync(fake.homeDir, { recursive: true, force: true });
+    }
+  });
+
+  test('prints the install banner before the reports on a TTY', async () => {
+    const fake = makeFakeBinHome('safety-net-update-banner', ['claude']);
+    writeClaudePluginRecords(fake.homeDir, ['cc-safety-net@cc-marketplace'], {
+      enableByDefault: true,
+    });
+
+    try {
+      // Spinner frames race the real update, so only the banner and the report are asserted.
+      const result = await runUpdate({ ...fake, isTTY: true });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('┏━┛┏━┛  ┏━┛┏━┃┏━┛┏━┛━┏┛┃ ┃  ┏━ ┏━┛━┏┛');
+      expect(result.stdout.indexOf('┏━┛┏━┛')).toBeLessThan(
+        result.stdout.indexOf('Updated Claude Code integration'),
+      );
     } finally {
       rmSync(fake.homeDir, { recursive: true, force: true });
     }

@@ -4,6 +4,7 @@ import {
   extractPathLikeToolValues,
   getCommandFromToolInput,
   getNonCommandToolInputKind,
+  isReadOnlyTool,
   normalizeToolName,
   TOOL_INPUT_LIMITS,
 } from '@/parser/tool-input';
@@ -98,6 +99,7 @@ describe('tool input routing', () => {
     ['grep_search', 'grep'],
     ['rg', 'grep'],
     ['glob', 'glob'],
+    ['find', 'glob'],
     ['find_by_name', 'glob'],
     ['execute_command', 'unknown'],
     ['mcp__shell__run', 'unknown'],
@@ -105,6 +107,12 @@ describe('tool input routing', () => {
     ['PowerShell', 'unknown'],
   ] as const)('classifies %s as %s', (toolName, kind) => {
     expect(getNonCommandToolInputKind(toolName)).toBe(kind);
+  });
+
+  test('treats search tools as read-only and writers as possible writers', () => {
+    expect(isReadOnlyTool('find')).toBe(true);
+    expect(isReadOnlyTool('find_by_name')).toBe(true);
+    expect(isReadOnlyTool('write_file')).toBe(false);
   });
 });
 

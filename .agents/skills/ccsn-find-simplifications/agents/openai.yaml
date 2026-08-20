@@ -1,0 +1,5 @@
+interface:
+  display_name: "CCSN Find Simplifications"
+
+policy:
+  allow_implicit_invocation: false

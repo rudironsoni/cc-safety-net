@@ -3,7 +3,8 @@ import { pathToFileURL } from 'node:url';
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
-const request = JSON.parse(input);
+const parsed = JSON.parse(input);
+const requests = Array.isArray(parsed) ? parsed : [parsed];
 const events = new Map();
 const commands = new Map();
 const sentMessages = [];
@@ -21,23 +22,27 @@ const pi = {
 const extension = (await import(pathToFileURL(process.argv[1]).href)).default;
 await extension(pi);
 
-if (request.kind === 'registration') {
-  await commands.get('cc-safety-net').handler(request.commandArgs, {
-    isIdle: () => request.idle,
-  });
-  process.stdout.write(JSON.stringify({
-    eventNames: [...events.keys()],
-    commandNames: [...commands.keys()],
-    commandDescription: commands.get('cc-safety-net').description,
-    sentMessages,
-  }));
-} else {
+const results = [];
+for (const request of requests) {
+  if (request.kind === 'registration') {
+    await commands.get('cc-safety-net').handler(request.commandArgs, {
+      isIdle: () => request.idle,
+    });
+    results.push({
+      eventNames: [...events.keys()],
+      commandNames: [...commands.keys()],
+      commandDescription: commands.get('cc-safety-net').description,
+      sentMessages: [...sentMessages],
+    });
+    continue;
+  }
   const result = await events.get('tool_call')(request.event, {
     cwd: process.cwd(),
     sessionManager: { getSessionId: () => request.sessionId },
   });
-  process.stdout.write(JSON.stringify({ result: result ?? null }));
+  results.push({ result: result ?? null });
 }
+process.stdout.write(JSON.stringify(Array.isArray(parsed) ? { results } : results[0]));
 `;
 
 export const AMP_HOST_SCRIPT = `
@@ -117,7 +122,8 @@ import { pathToFileURL } from 'node:url';
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
-const request = JSON.parse(input);
+const parsed = JSON.parse(input);
+const requests = Array.isArray(parsed) ? parsed : [parsed];
 const pluginModule = await import(pathToFileURL(process.argv[1]).href);
 const factories = Object.values(pluginModule).filter((value) => typeof value === 'function');
 const pluginInput = {
@@ -131,15 +137,18 @@ const pluginInput = {
 };
 const hooks = await Promise.all(factories.map((factory) => factory(pluginInput)));
 
-if (request.kind === 'config') {
-  for (const hook of hooks) await hook.config?.(request.config);
-  process.stdout.write(JSON.stringify({
-    exportNames: Object.keys(pluginModule),
-    pluginCount: hooks.length,
-    commandNames: Object.keys(request.config.command ?? {}),
-    existingCommand: request.config.command?.existing,
-  }));
-} else {
+const results = [];
+for (const request of requests) {
+  if (request.kind === 'config') {
+    for (const hook of hooks) await hook.config?.(request.config);
+    results.push({
+      exportNames: Object.keys(pluginModule),
+      pluginCount: hooks.length,
+      commandNames: Object.keys(request.config.command ?? {}),
+      existingCommand: request.config.command?.existing,
+    });
+    continue;
+  }
   try {
     for (const hook of hooks) {
       await hook['tool.execute.before']?.(
@@ -147,12 +156,13 @@ if (request.kind === 'config') {
         { args: request.args },
       );
     }
-    process.stdout.write(JSON.stringify({ allowed: true }));
+    results.push({ allowed: true });
   } catch (error) {
-    process.stdout.write(JSON.stringify({
+    results.push({
       allowed: false,
       reason: error instanceof Error ? error.message : String(error),
-    }));
+    });
   }
 }
+process.stdout.write(JSON.stringify(Array.isArray(parsed) ? { results } : results[0]));
 `;

@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   expectNoHookOutput,
   expectSecretProtectionDeny,
@@ -29,16 +32,18 @@ describe('Kimi Code hook', () => {
   });
 
   describe('non-target tool', () => {
-    test('ignores non-Bash tools when user policy disables secret protection', async () => {
+    test('ignores non-Bash tools, and their cwd, when user policy disables secret protection', async () => {
       await withHookTestContext(async (context) => {
         writeUserPolicy(context.home, { version: 1, secret_protection: { enabled: false } });
 
-        await expectNoHookOutput(context.runKimiHook, {
-          hook_event_name: 'PreToolUse',
-          cwd: context.cwd,
-          tool_name: 'ReadFile',
-          tool_input: { file_path: '.env' },
-        });
+        for (const toolInput of [{ file_path: '.env' }, { file_path: '.env', cwd: 42 }]) {
+          await expectNoHookOutput(context.runKimiHook, {
+            hook_event_name: 'PreToolUse',
+            cwd: context.cwd,
+            tool_name: 'ReadFile',
+            tool_input: toolInput,
+          });
+        }
       });
     });
 
@@ -82,6 +87,71 @@ describe('Kimi Code hook', () => {
       const result = await runKimiHook('{invalid json');
 
       expect(getHookDenyReason(result, 'kimi-code')).toContain('Failed to parse hook input JSON.');
+    });
+  });
+
+  describe('tool_input.cwd containment', () => {
+    test('honors tool_input.cwd as the execution directory', async () => {
+      await withHookTestContext(async (context) => {
+        mkdirSync(join(context.cwd, 'repo', '.git'), { recursive: true });
+        writeFileSync(join(context.cwd, 'repo', '.git', 'HEAD'), 'ref: refs/heads/main\n');
+
+        const result = await context.runKimiHook({
+          hook_event_name: 'PreToolUse',
+          session_id: 'kimi-test-session',
+          cwd: context.cwd,
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf .', cwd: 'repo' },
+        });
+
+        expect(getHookDenyReason(result, 'kimi-code')).toContain('Rule: rm.git-metadata');
+      });
+    });
+
+    test('allows a contained relative tool_input.cwd', async () => {
+      await withHookTestContext(async (context) => {
+        mkdirSync(join(context.cwd, 'app'));
+
+        await expectNoHookOutput(context.runKimiHook, {
+          hook_event_name: 'PreToolUse',
+          cwd: context.cwd,
+          tool_name: 'Bash',
+          tool_input: { command: 'git status', cwd: 'app' },
+        });
+      });
+    });
+
+    test('denies non-string, empty, and unresolvable tool_input.cwd values', async () => {
+      await withHookTestContext(async (context) => {
+        for (const cwd of ['', '   ', null, 42, join(context.cwd, 'missing')]) {
+          const result = await context.runKimiHook({
+            hook_event_name: 'PreToolUse',
+            cwd: context.cwd,
+            tool_name: 'Bash',
+            tool_input: { command: 'git status', cwd },
+          });
+
+          expect(getHookDenyReason(result, 'kimi-code')).toContain('CC Safety Net failed closed');
+        }
+      });
+    });
+
+    test('denies tool_input.cwd outside the session directory', async () => {
+      await withHookTestContext(async (context) => {
+        const outside = mkdtempSync(join(tmpdir(), 'safety-net-kimi-outside-'));
+        try {
+          const result = await context.runKimiHook({
+            hook_event_name: 'PreToolUse',
+            cwd: context.cwd,
+            tool_name: 'Bash',
+            tool_input: { command: 'git status', cwd: outside },
+          });
+
+          expect(getHookDenyReason(result, 'kimi-code')).toContain('CC Safety Net failed closed');
+        } finally {
+          rmSync(outside, { recursive: true, force: true });
+        }
+      });
     });
   });
 

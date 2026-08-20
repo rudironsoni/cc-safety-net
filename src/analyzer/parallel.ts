@@ -10,6 +10,7 @@ import {
 import { analysisWordText, textCommandWords } from '@/analyzer/command-words';
 import { getFindPrimaryArity, isFindExecPrimary } from '@/analyzer/find';
 import { extractGitSubcommandAndRest } from '@/analyzer/git/parse';
+import { GIT_RULE_SUBCOMMANDS } from '@/analyzer/git/rules';
 import { extractInterpreterExecutableSources, isInterpreterCommand } from '@/analyzer/interpreters';
 import {
   PARALLEL_ANALYSIS_LIMITS,
@@ -55,21 +56,6 @@ const REASON_PARALLEL_UNSUPPORTED =
   'parallel command construction cannot be verified safely. Use the default ::: separator, literal arguments, and built-in replacement strings.';
 const PARALLEL_PLACEHOLDER_RE = /\{[^{}\s]*\}/;
 const PARALLEL_RM_PLACEHOLDER_RE = /\{\}|\{-?\d+\}/g;
-const PROTECTED_GIT_SUBCOMMANDS = new Set([
-  'branch',
-  'checkout',
-  'clean',
-  'merge',
-  'push',
-  'rebase',
-  'reflog',
-  'reset',
-  'restore',
-  'stash',
-  'switch',
-  'tag',
-  'worktree',
-]);
 const AWK_SOURCE_OPTION_INPUTS = ['e', 'f', 'source', 'file', '-e', '-f', '--source', '--file'];
 const INTERPRETER_SOURCE_OPTION_INPUTS = [
   'c',
@@ -583,7 +569,7 @@ function gitInputCanChangeProtectedOperation(tokens: readonly string[]): boolean
   if (gitGlobalConfigCanChange(tokens)) return true;
   const parsed = extractGitSubcommandAndRest(tokens);
   if (parsed.subcommand === null || hasParallelPlaceholder(parsed.subcommand)) return true;
-  if (!PROTECTED_GIT_SUBCOMMANDS.has(parsed.subcommand.toLowerCase())) return false;
+  if (!GIT_RULE_SUBCOMMANDS.has(parsed.subcommand.toLowerCase())) return false;
 
   const optionTerminator = parsed.rest.indexOf('--');
   const structuralTokens = parsed.rest.slice(

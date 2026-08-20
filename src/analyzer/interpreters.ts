@@ -543,10 +543,7 @@ function interpreterCodeHasDangerousText(
 ): boolean {
   if (hasLinearInterpreterDanger(executableCode, 'rm', scanWork)) return true;
   for (const pattern of [
-    /\bgit[^\S\n]+reset[^\S\n]+--ha(?:r(?:d)?)?\b/,
-    /\bgit[^\S\n]+reset[^\S\n]+--me(?:r(?:g(?:e)?)?)?\b/,
     /\bgit[^\S\n]+checkout[^\S\n]+--[^\S\n]/,
-    /\bgit[^\S\n]+clean[^\S\n]+(-[^\s]*f[^\s]*|--fo(?:r(?:c(?:e)?)?)?)\b/,
     /\bgit[^\S\n]+stash[^\S\n]+(drop|clear)\b/,
   ]) {
     chargeNativeLinearPass(scanWork, executableCode);

@@ -126,8 +126,7 @@ export function formatStepStyleD(
     case 'env-strip': {
       lines.push('');
       lines.push(`STEP ${stepNum} ${box.h} Strip environment variables`);
-      const envKeys = Object.keys(step.envVars);
-      lines.push(`  Removed: ${envKeys.map((k) => `${k}=<redacted>`).join(', ')}`);
+      lines.push(`  Removed: ${step.envVars.map((key) => `${key}=<redacted>`).join(', ')}`);
       lines.push(`  Tokens:  ${formatTokenArray(step.output)}`);
       return { lines, incrementStep: true };
     }
@@ -181,8 +180,7 @@ export function formatStepStyleD(
     case 'rule-check': {
       lines.push('');
       lines.push(`STEP ${stepNum} ${box.h} Match rules`);
-      const ruleRef = `${step.ruleModule}:${step.ruleFunction}()`;
-      lines.push(`  Rule:   ${ruleRef}`);
+      lines.push(`  Rule:   ${step.rule}()`);
       if (step.matched) {
         lines.push(`  Result: MATCHED`);
       } else {

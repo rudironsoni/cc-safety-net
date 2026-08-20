@@ -220,6 +220,78 @@ describe('built CLI protection contract', () => {
     });
   });
 
+  test('Coding CLI blocks secret metadata in paranoid mode', async () => {
+    await withWorkspace(async ({ cwd, home }) => {
+      const paranoidCommand = 'test -f "$HOME/.ssh/id_rsa"';
+      const paranoidSession = 'log-regression-secret-metadata-paranoid';
+      const paranoidResult = await runCodingCliTool(
+        'Bash',
+        { command: paranoidCommand },
+        cwd,
+        home,
+        paranoidSession,
+        () => writeFileSync(join(cwd, 'paranoid-secret-metadata-ran'), 'ran'),
+        'paranoid',
+      );
+      expect(paranoidResult.allowed).toBe(false);
+      expect(paranoidResult.reason).toContain('secret.home.ssh');
+      expectSingleAudit(home, paranoidSession, {
+        agent: 'claude-code',
+        command: paranoidCommand,
+        ruleId: 'secret.home.ssh',
+      });
+    });
+  });
+
+  // Dotfile and password managers routinely make ~/.ssh a symlink. Canonicalizing
+  // the candidate rewrites it to the link target, which no longer starts with
+  // `~/.ssh`, so the rule that names the directory used to stop matching. Guarded
+  // at the packaged-artifact level because that binary is what ships.
+  test('Coding CLI blocks credentials under a symlinked ~/.ssh', async () => {
+    await withWorkspace(async ({ cwd, home }) => {
+      mkdirSync(join(home, 'vault', 'ssh'), { recursive: true });
+      writeFileSync(join(home, 'vault', 'ssh', 'config'), 'Host *');
+      symlinkSync(join(home, 'vault', 'ssh'), join(home, '.ssh'), 'dir');
+
+      const command = 'cat "$HOME/.ssh/config"';
+      const sessionId = 'claude-symlinked-ssh-secret';
+      const result = await runCodingCliTool('Bash', { command }, cwd, home, sessionId, () =>
+        writeFileSync(join(cwd, 'symlinked-ssh-ran'), 'ran'),
+      );
+
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain('secret.home.ssh');
+      expectSingleAudit(home, sessionId, {
+        agent: 'claude-code',
+        command,
+        ruleId: 'secret.home.ssh',
+      });
+    });
+  });
+
+  // Text that cannot name a local file must not be read as one: a regex operand
+  // survives shell quoting with its backslash intact, and a remote URL addresses
+  // another host entirely.
+  test.each([
+    [
+      'a regex operand of an unmodelled search tool',
+      'regex-operand',
+      'git grep -n "process\\.env" -- .',
+    ],
+    [
+      'a remote URL naming an env template',
+      'remote-url',
+      'curl -sL https://raw.githubusercontent.com/o/r/main/.env.test',
+    ],
+  ] as const)('Coding CLI allows %s and records only the allow decision', async (_name, slug, command) => {
+    await withWorkspace(async ({ cwd, home }) => {
+      const sessionId = `claude-allows-${slug}`;
+      await expectAllowedAction(cwd, home, sessionId, (action) =>
+        runCodingCliTool('Bash', { command }, cwd, home, sessionId, action),
+      );
+    });
+  });
+
   test.each([
     ['Bash execution', 'bash-executes', "bash -c 'rm -rf /'", 'rm.recursive-force-root-or-home'],
     [
@@ -480,21 +552,35 @@ describe('built CLI protection contract', () => {
 });
 
 describe('built Pi extension protection contract', () => {
-  test('loads through the Pi extension host and registers its public contracts', async () => {
-    await withWorkspace(async ({ cwd, home }) => {
-      const result = await runBuiltHost(
-        piPath,
-        PI_HOST_SCRIPT,
-        {
-          kind: 'registration',
-          commandArgs: 'block git reset',
-          idle: false,
-        },
-        cwd,
-        home,
-      );
+  test('loads once through the Pi host and preserves every public contract', async () => {
+    await withIntegrationWorkspace(async ({ cwd, home, policyPath, originalPolicy }) => {
+      const resetSession = 'pi-reset';
+      const resetSentinel = join(cwd, 'pi-reset-sentinel');
+      writeFileSync(resetSentinel, 'preserve');
+      const results = (
+        await runBuiltHost(
+          piPath,
+          PI_HOST_SCRIPT,
+          [
+            { kind: 'registration', commandArgs: 'block git reset', idle: false },
+            piToolRequest('bash', { command: 'git status' }, 'pi-safe'),
+            piToolRequest('bash', { command: 'git reset --hard' }, resetSession),
+            piToolRequest('Read', { file_path: '.env' }, 'pi-secret'),
+            piToolRequest('Read', { file_path: '.env.example' }, 'pi--env-example'),
+            piToolRequest('Read', { file_path: 'README.md' }, 'pi-README-md'),
+            piToolRequest(
+              'Write',
+              { file_path: policyPath, content: 'mutated' },
+              'pi-policy-write',
+            ),
+          ],
+          cwd,
+          home,
+        )
+      ).results as Record<string, unknown>[];
 
-      expect(result).toMatchObject({
+      expect(results).toHaveLength(7);
+      expect(hostResult(results, 0)).toMatchObject({
         eventNames: ['tool_call'],
         commandNames: ['cc-safety-net'],
         commandDescription: 'Manage CC Safety Net rulebooks',
@@ -505,214 +591,177 @@ describe('built Pi extension protection contract', () => {
           },
         ],
       });
+
+      await expectAllowedAction(cwd, home, 'pi-safe', (action) =>
+        Promise.resolve(applyPiHostResult(hostResult(results, 1), action)),
+      );
+
+      const resetResult = applyPiHostResult(hostResult(results, 2), () => rmSync(resetSentinel));
+      expect(expectDeniedReason(resetResult)).toContain('git.reset-hard');
+      expect(readFileSync(resetSentinel, 'utf8')).toBe('preserve');
+      expectSingleAudit(home, resetSession, {
+        agent: 'pi',
+        command: 'git reset --hard',
+        ruleId: 'git.reset-hard',
+      });
+
+      expectSecretReadBlocked('pi', hostResult(results, 3), applyPiHostResult, cwd, home);
+      expectPublicReadsAllowed(applyPiHostResult, cwd, home, [
+        [hostResult(results, 4), 'pi--env-example', '.env.example', 'SECRET=example'],
+        [hostResult(results, 5), 'pi-README-md', 'README.md', 'public'],
+      ]);
+
+      const policyResult = applyPiHostResult(hostResult(results, 6), () =>
+        writeFileSync(policyPath, 'mutated'),
+      );
+      expect(expectDeniedReason(policyResult)).toContain('protected policy config');
+      expect(readFileSync(policyPath, 'utf8')).toBe(originalPolicy);
+      expectSingleAudit(home, 'pi-policy-write', { agent: 'pi' });
     });
   });
 });
 
 describe('built OpenCode plugin protection contract', () => {
-  test('loads every legacy export like OpenCode and augments its config', async () => {
-    await withWorkspace(async ({ cwd, home }) => {
-      const result = await runBuiltHost(
-        openCodePath,
-        OPENCODE_HOST_SCRIPT,
-        {
-          kind: 'config',
-          config: {
-            shell: '/bin/bash',
-            command: { existing: { description: 'Existing command', template: 'keep' } },
-          },
-        },
-        cwd,
-        home,
-      );
+  test('loads once through the OpenCode host and preserves every public contract', async () => {
+    await withIntegrationWorkspace(async ({ cwd, home, policyPath, originalPolicy }) => {
+      const patchSession = 'opencode-patch-content';
+      const policyPatchSession = 'opencode-policy-patch';
+      const resetSession = 'opencode-reset';
+      const resetSentinel = join(cwd, 'opencode-reset-sentinel');
+      writeFileSync(resetSentinel, 'preserve');
+      const results = (
+        await runBuiltHost(
+          openCodePath,
+          OPENCODE_HOST_SCRIPT,
+          [
+            {
+              kind: 'config',
+              config: {
+                shell: '/bin/bash',
+                command: { existing: { description: 'Existing command', template: 'keep' } },
+              },
+            },
+            openCodeToolRequest(
+              'apply_patch',
+              {
+                patchText: [
+                  '*** Begin Patch',
+                  '*** Update File: README.md',
+                  '@@',
+                  '+rm -rf .',
+                  '+.env',
+                  '*** End Patch',
+                ].join('\n'),
+              },
+              patchSession,
+            ),
+            openCodeToolRequest(
+              'apply_patch',
+              {
+                patchText: [
+                  '*** Begin Patch',
+                  `*** Update File: ${policyPath}`,
+                  '@@',
+                  '-{"version":1}',
+                  '+{}',
+                  '*** End Patch',
+                ].join('\n'),
+              },
+              policyPatchSession,
+            ),
+            openCodeToolRequest('bash', { command: 'git status' }, 'opencode-safe'),
+            openCodeToolRequest('bash', { command: 'git reset --hard' }, resetSession),
+            openCodeToolRequest('read', { path: '.env' }, 'opencode-secret'),
+            openCodeToolRequest('read', { path: '.env.example' }, 'opencode--env-example'),
+            openCodeToolRequest('read', { path: 'README.md' }, 'opencode-README-md'),
+            openCodeToolRequest(
+              'Write',
+              { file_path: policyPath, content: 'mutated' },
+              'opencode-policy-write',
+            ),
+          ],
+          cwd,
+          home,
+        )
+      ).results as Record<string, unknown>[];
 
-      expect(result).toMatchObject({
+      expect(results).toHaveLength(9);
+      expect(hostResult(results, 0)).toMatchObject({
         exportNames: ['CCSafetyNetPlugin'],
         pluginCount: 1,
         commandNames: expect.arrayContaining(['cc-safety-net', 'existing']),
         existingCommand: { description: 'Existing command', template: 'keep' },
       });
-    });
-  });
 
-  test('allows harmless patchText content', async () => {
-    await withWorkspace(async ({ cwd, home }) => {
-      const patchSession = 'opencode-patch-content';
       await expectAllowedAction(
         cwd,
         home,
         patchSession,
-        (action) =>
-          runOpenCodeGated(
-            'apply_patch',
-            {
-              patchText: [
-                '*** Begin Patch',
-                '*** Update File: README.md',
-                '@@',
-                '+rm -rf .',
-                '+.env',
-                '*** End Patch',
-              ].join('\n'),
-            },
-            cwd,
-            home,
-            patchSession,
-            action,
-          ),
+        (action) => Promise.resolve(applyOpenCodeHostResult(hostResult(results, 1), action)),
         false,
       );
-    });
-  });
 
-  test('blocks policy mutation through patchText', async () => {
-    await withPolicyWorkspace(async ({ cwd, home, policyPath, originalPolicy }) => {
-      const policySession = 'opencode-policy-patch';
-      const policyResult = await runOpenCodeGated(
-        'apply_patch',
-        {
-          patchText: [
-            '*** Begin Patch',
-            `*** Update File: ${policyPath}`,
-            '@@',
-            '-{"version":1}',
-            '+{}',
-            '*** End Patch',
-          ].join('\n'),
-        },
+      const policyPatchResult = applyOpenCodeHostResult(hostResult(results, 2), () =>
+        writeFileSync(policyPath, 'mutated'),
+      );
+      expect(expectDeniedReason(policyPatchResult)).toContain('protected policy config');
+      expect(readFileSync(policyPath, 'utf8')).toBe(originalPolicy);
+      expectSingleAudit(home, policyPatchSession, { agent: 'opencode' });
+
+      await expectAllowedAction(cwd, home, 'opencode-safe', (action) =>
+        Promise.resolve(applyOpenCodeHostResult(hostResult(results, 3), action)),
+      );
+
+      const resetResult = applyOpenCodeHostResult(hostResult(results, 4), () =>
+        rmSync(resetSentinel),
+      );
+      expect(expectDeniedReason(resetResult)).toContain('git.reset-hard');
+      expect(readFileSync(resetSentinel, 'utf8')).toBe('preserve');
+      expectSingleAudit(home, resetSession, {
+        agent: 'opencode',
+        command: 'git reset --hard',
+        ruleId: 'git.reset-hard',
+      });
+
+      expectSecretReadBlocked(
+        'opencode',
+        hostResult(results, 5),
+        applyOpenCodeHostResult,
         cwd,
         home,
-        policySession,
-        () => writeFileSync(policyPath, 'mutated'),
       );
-      expect(policyResult.allowed).toBe(false);
-      expect(policyResult.reason).toContain('protected policy config');
+      expectPublicReadsAllowed(applyOpenCodeHostResult, cwd, home, [
+        [hostResult(results, 6), 'opencode--env-example', '.env.example', 'SECRET=example'],
+        [hostResult(results, 7), 'opencode-README-md', 'README.md', 'public'],
+      ]);
+
+      const policyResult = applyOpenCodeHostResult(hostResult(results, 8), () =>
+        writeFileSync(policyPath, 'mutated'),
+      );
+      expect(expectDeniedReason(policyResult)).toContain('protected policy config');
       expect(readFileSync(policyPath, 'utf8')).toBe(originalPolicy);
-      expectSingleAudit(home, policySession, { agent: 'opencode' });
+      expectSingleAudit(home, 'opencode-policy-write', { agent: 'opencode' });
     });
   });
 });
 
-for (const integration of [
-  {
-    agent: 'pi',
-    title: 'built Pi extension protection contract',
-    run: runPiGated,
-    readTool: 'Read',
-    readPathField: 'file_path',
-  },
-  {
-    agent: 'opencode',
-    title: 'built OpenCode plugin protection contract',
-    run: runOpenCodeGated,
-    readTool: 'read',
-    readPathField: 'path',
-  },
-] as const) {
-  describe(integration.title, () => {
-    test('allows git status', async () => {
-      await withWorkspace(async ({ cwd, home }) => {
-        const sessionId = `${integration.agent}-safe`;
-        await expectAllowedAction(cwd, home, sessionId, (action) =>
-          integration.run('bash', { command: 'git status' }, cwd, home, sessionId, action),
-        );
-      });
-    });
-
-    test('blocks git reset --hard and preserves the target', async () => {
-      await withWorkspace(async ({ cwd, home }) => {
-        const sessionId = `${integration.agent}-reset`;
-        const sentinel = join(cwd, `${integration.agent}-reset-sentinel`);
-        writeFileSync(sentinel, 'preserve');
-        const result = await integration.run(
-          'bash',
-          { command: 'git reset --hard' },
-          cwd,
-          home,
-          sessionId,
-          () => rmSync(sentinel),
-        );
-        expect(expectDeniedReason(result)).toContain('git.reset-hard');
-        expect(readFileSync(sentinel, 'utf8')).toBe('preserve');
-        expectSingleAudit(home, sessionId, {
-          agent: integration.agent,
-          command: 'git reset --hard',
-          ruleId: 'git.reset-hard',
-        });
-      });
-    });
-
-    test('blocks direct .env reads', async () => {
-      await withSecretWorkspace(async ({ cwd, home }) => {
-        const sessionId = `${integration.agent}-secret`;
-        const reads: string[] = [];
-        const result = await integration.run(
-          integration.readTool,
-          { [integration.readPathField]: '.env' },
-          cwd,
-          home,
-          sessionId,
-          () => reads.push(readFileSync(join(cwd, '.env'), 'utf8')),
-        );
-        expect(expectDeniedReason(result)).toContain('secret.basename.env');
-        expect(reads).toEqual([]);
-        expectSingleAudit(home, sessionId, {
-          agent: integration.agent,
-          command: '.env',
-          ruleId: 'secret.basename.env',
-        });
-      });
-    });
-
-    test.each([
-      ['.env.example', 'SECRET=example'],
-      ['README.md', 'public'],
-    ] as const)('allows harmless %s reads', async (filePath, expected) => {
-      await withSecretWorkspace(async ({ cwd, home }) => {
-        const sessionId = `${integration.agent}-${filePath.replaceAll('.', '-')}`;
-        const reads: string[] = [];
-        expect(
-          await integration.run(
-            integration.readTool,
-            { [integration.readPathField]: filePath },
-            cwd,
-            home,
-            sessionId,
-            () => reads.push(readFileSync(join(cwd, filePath), 'utf8')),
-          ),
-        ).toEqual({ allowed: true });
-        expect(reads).toEqual([expected]);
-        expect(readAuditLogEntriesForSession(home, sessionId)).toEqual([]);
-      });
-    });
-
-    test('blocks policy writes', async () => {
-      await withPolicyWorkspace(async ({ cwd, home, policyPath, originalPolicy }) => {
-        const sessionId = `${integration.agent}-policy-write`;
-        const result = await integration.run(
-          'Write',
-          { file_path: policyPath, content: 'mutated' },
-          cwd,
-          home,
-          sessionId,
-          () => writeFileSync(policyPath, 'mutated'),
-        );
-        expect(expectDeniedReason(result)).toContain('protected policy config');
-        expect(readFileSync(policyPath, 'utf8')).toBe(originalPolicy);
-        expectSingleAudit(home, sessionId, { agent: integration.agent });
-      });
-    });
+function withIntegrationWorkspace<T>(
+  run: (context: {
+    cwd: string;
+    home: string;
+    policyPath: string;
+    originalPolicy: string;
+  }) => T | Promise<T>,
+) {
+  return withWorkspace((context) => {
+    writeSecretWorkspaceFixtures(context.cwd);
+    return run({ ...context, ...writePolicyWorkspaceFixtures(context.cwd, context.home) });
   });
 }
 
 function withSecretWorkspace<T>(run: (context: { cwd: string; home: string }) => T | Promise<T>) {
   return withWorkspace((context) => {
-    mkdirSync(join(context.cwd, 'src'));
-    mkdirSync(join(context.cwd, 'nested'));
-    writeFileSync(join(context.cwd, '.env'), 'SECRET=protected');
-    writeFileSync(join(context.cwd, '.env.example'), 'SECRET=example');
-    writeFileSync(join(context.cwd, 'README.md'), 'public');
-    symlinkSync(join(context.cwd, '.env'), join(context.cwd, 'public.txt'));
+    writeSecretWorkspaceFixtures(context.cwd);
     return run(context);
   });
 }
@@ -727,14 +776,27 @@ function withPolicyWorkspace<T>(
   }) => T | Promise<T>,
 ) {
   return withWorkspace((context) => {
-    const safetyNetHome = join(context.home, '.cc-safety-net');
-    const policyPath = join(safetyNetHome, 'policy.json');
-    const originalPolicy = JSON.stringify({ version: 1 });
-    mkdirSync(safetyNetHome, { recursive: true });
-    writeFileSync(policyPath, originalPolicy);
-    symlinkSync(policyPath, join(context.cwd, 'policy-alias.json'));
-    return run({ ...context, safetyNetHome, policyPath, originalPolicy });
+    return run({ ...context, ...writePolicyWorkspaceFixtures(context.cwd, context.home) });
   });
+}
+
+function writeSecretWorkspaceFixtures(cwd: string) {
+  mkdirSync(join(cwd, 'src'));
+  mkdirSync(join(cwd, 'nested'));
+  writeFileSync(join(cwd, '.env'), 'SECRET=protected');
+  writeFileSync(join(cwd, '.env.example'), 'SECRET=example');
+  writeFileSync(join(cwd, 'README.md'), 'public');
+  symlinkSync(join(cwd, '.env'), join(cwd, 'public.txt'));
+}
+
+function writePolicyWorkspaceFixtures(cwd: string, home: string) {
+  const safetyNetHome = join(home, '.cc-safety-net');
+  const policyPath = join(safetyNetHome, 'policy.json');
+  const originalPolicy = JSON.stringify({ version: 1 });
+  mkdirSync(safetyNetHome, { recursive: true });
+  writeFileSync(policyPath, originalPolicy);
+  symlinkSync(policyPath, join(cwd, 'policy-alias.json'));
+  return { safetyNetHome, policyPath, originalPolicy };
 }
 
 function policyMutation(
@@ -805,64 +867,78 @@ async function runBuiltHook(
   return (await runNode([cliPath, 'hook', flag], input, cwd, home, level)).stdout.trim();
 }
 
-type IntegrationGate = (
-  toolName: string,
-  input: Record<string, unknown>,
-  cwd: string,
-  home: string,
-  sessionId: string,
-  action: () => void,
-) => Promise<{ allowed: true } | { allowed: false; reason: string }>;
+type IntegrationGateResult = { allowed: true } | { allowed: false; reason: string };
 
-function expectDeniedReason(result: Awaited<ReturnType<IntegrationGate>>) {
+function hostResult(results: Record<string, unknown>[], index: number) {
+  const result = results[index];
+  if (!result) throw new Error(`Missing integration host result ${index}`);
+  return result;
+}
+
+function expectDeniedReason(result: IntegrationGateResult) {
   expect(result.allowed).toBe(false);
   if (result.allowed) throw new Error('Expected the integration host to block the action');
   return result.reason;
 }
 
-async function runPiGated(
-  toolName: string,
-  input: Record<string, unknown>,
-  cwd: string,
-  home: string,
-  sessionId: string,
-  action: () => void,
-) {
-  const output = await runBuiltHost(
-    piPath,
-    PI_HOST_SCRIPT,
-    {
-      kind: 'tool_call',
-      event: { type: 'tool_call', toolCallId: `${sessionId}-call`, toolName, input },
-      sessionId,
-    },
-    cwd,
-    home,
-  );
+function piToolRequest(toolName: string, input: Record<string, unknown>, sessionId: string) {
+  return {
+    kind: 'tool_call',
+    event: { type: 'tool_call', toolCallId: `${sessionId}-call`, toolName, input },
+    sessionId,
+  };
+}
+
+function applyPiHostResult(output: Record<string, unknown>, action: () => void) {
   const result = output.result as { block: true; reason: string } | null;
   if (result?.block) return { allowed: false, reason: result.reason } as const;
   action();
   return { allowed: true } as const;
 }
 
-async function runOpenCodeGated(
-  tool: string,
-  args: Record<string, unknown>,
-  cwd: string,
-  home: string,
-  sessionId: string,
-  action: () => void,
-) {
-  const output = await runBuiltHost(
-    openCodePath,
-    OPENCODE_HOST_SCRIPT,
-    { kind: 'tool', tool, args, sessionId },
-    cwd,
-    home,
-  );
+function openCodeToolRequest(tool: string, args: Record<string, unknown>, sessionId: string) {
+  return { kind: 'tool', tool, args, sessionId };
+}
+
+function applyOpenCodeHostResult(output: Record<string, unknown>, action: () => void) {
   if (!output.allowed) return { allowed: false, reason: String(output.reason) } as const;
   action();
   return { allowed: true } as const;
+}
+
+function expectSecretReadBlocked(
+  agent: 'pi' | 'opencode',
+  result: Record<string, unknown>,
+  apply: (output: Record<string, unknown>, action: () => void) => IntegrationGateResult,
+  cwd: string,
+  home: string,
+) {
+  const reads: string[] = [];
+  expect(
+    expectDeniedReason(apply(result, () => reads.push(readFileSync(join(cwd, '.env'), 'utf8')))),
+  ).toContain('secret.basename.env');
+  expect(reads).toEqual([]);
+  expectSingleAudit(home, `${agent}-secret`, {
+    agent,
+    command: '.env',
+    ruleId: 'secret.basename.env',
+  });
+}
+
+function expectPublicReadsAllowed(
+  apply: (output: Record<string, unknown>, action: () => void) => IntegrationGateResult,
+  cwd: string,
+  home: string,
+  cases: readonly (readonly [Record<string, unknown>, string, string, string])[],
+) {
+  for (const [result, sessionId, filePath, expected] of cases) {
+    const reads: string[] = [];
+    expect(apply(result, () => reads.push(readFileSync(join(cwd, filePath), 'utf8')))).toEqual({
+      allowed: true,
+    });
+    expect(reads).toEqual([expected]);
+    expect(readAuditLogEntriesForSession(home, sessionId)).toEqual([]);
+  }
 }
 
 function getClaudeStyleDenyReason(output: Record<string, unknown>) {

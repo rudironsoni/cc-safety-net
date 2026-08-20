@@ -16,7 +16,6 @@ const config: KnipConfig = {
     'scripts/release-assets.ts!',
     'scripts/release-transaction.ts!',
     'scripts/verify-coverage.ts!',
-    'scripts/verify-deterministic-build.ts!',
     'scripts/verify-package.ts!',
     'scripts/verify-repository-plugin.ts!',
   ],

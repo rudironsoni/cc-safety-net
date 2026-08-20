@@ -42,9 +42,13 @@ export function readRulesConfig(path: string | PolicyFilesystemTarget): {
     if (error instanceof PolicyFilesystemError) {
       return { config: null, errors: [error.message] };
     }
+    // Only a parse failure means the file is malformed; anything else — a schema
+    // dependency that will not load, say — has to name itself instead of blaming
+    // valid JSON.
+    const message = error instanceof Error ? error.message : String(error);
     return {
       config: null,
-      errors: ['Invalid JSON'],
+      errors: [error instanceof SyntaxError ? 'Invalid JSON' : message],
     };
   }
 }

@@ -21,11 +21,10 @@ export type TracedCommandEvaluation = Readonly<{
 export function evaluateCommandWithTrace(
   command: string,
   options: AnalyzeInput,
-  suppliedProgram?: CommandProgram,
   suppliedFactStore?: SemanticFactStore,
 ): TracedCommandEvaluation {
   const factStore = suppliedFactStore ?? createSemanticFactStore();
-  const program = suppliedProgram ?? factStore.getCommandProgram(command, options.shell ?? 'auto');
+  const program = factStore.getCommandProgram(command, options.shell ?? 'auto');
   const recorder = createCommandTraceRecorder();
   const trace = createCommandTraceContext(recorder);
   const displayProgram =

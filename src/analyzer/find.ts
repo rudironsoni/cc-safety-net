@@ -111,11 +111,6 @@ export interface AnalyzeFindContext extends RecursiveDeleteTargetTrustOptions {
   ) => DestructiveCommandRuleMatch | null;
 }
 
-/** @internal */
-export function analyzeFind(tokens: readonly string[], context: AnalyzeFindContext): string | null {
-  return analyzeFindMatch(textCommandWords(tokens), context)?.reason ?? null;
-}
-
 export function analyzeFindMatch(
   words: readonly CommandWord[],
   context: AnalyzeFindContext,

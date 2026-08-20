@@ -1,10 +1,12 @@
 import type { HookOutput } from '@/integrations/claude-code/hook';
 import {
   getToolRoute,
+  outputFailedClosed,
   resolveStandardHookContext,
   runConfiguredHookAdapter,
 } from '@/integrations/hook/common';
 import { KIMI_CODE_HOOK_EVENT } from '@/integrations/hook/constants';
+import { resolveContainedCwd } from '@/integrations/runtime';
 import type { CommandToolKind } from '@/ir/invocation';
 
 /** Kimi Code hook input format */
@@ -15,6 +17,7 @@ interface KimiCodeHookInput {
   tool_name?: string;
   tool_input?: {
     command?: string;
+    cwd?: unknown;
     [key: string]: unknown;
   };
   tool_call_id?: string;
@@ -44,8 +47,25 @@ export async function runKimiCodeHook(): Promise<void> {
       input: input.tool_input,
       route: getKimiCodeToolRoute(toolName),
     }),
-    getContext: (input, toolInput, toolName, outputDeny) =>
-      resolveStandardHookContext(input.cwd, toolInput, toolName, outputDeny),
+    getContext: (input, toolInput, toolName, outputDeny) => {
+      const context = resolveStandardHookContext(input.cwd, toolInput, toolName, outputDeny);
+      if (!context) return null;
+      const args = input.tool_input;
+      if (!KIMI_CODE_COMMAND_TOOLS.has(toolName) || !args || !Object.hasOwn(args, 'cwd')) {
+        return context;
+      }
+      const cwd = args.cwd;
+      if (typeof cwd !== 'string' || cwd.trim() === '') {
+        outputFailedClosed(outputDeny, toolInput, toolName);
+        return null;
+      }
+      const containedCwd = resolveContainedCwd(cwd, [context.configCwd]);
+      if (!containedCwd) {
+        outputFailedClosed(outputDeny, toolInput, toolName, cwd);
+        return null;
+      }
+      return { configCwd: context.configCwd, executionCwd: containedCwd };
+    },
     getSessionId: (input) => input.session_id,
   });
 }

@@ -73,8 +73,7 @@ export function explainCommand(command: string, options?: ExplainOptions): Expla
             steps: [
               {
                 type: 'rule-check',
-                ruleModule: preAnalysisBlock.ruleModule,
-                ruleFunction: preAnalysisBlock.ruleFunction,
+                rule: preAnalysisBlock.rule,
                 matched: true,
                 reason: preAnalysisBlock.reason,
               },
@@ -226,8 +225,7 @@ function findPreAnalysisBlock(command: string, options: AnalyzeInput) {
       reason: REASON_POLICY_CONFIG_PROTECTION,
       target: policyTarget.target,
       ruleId: 'policy-protection',
-      ruleModule: 'policy-protection',
-      ruleFunction: 'findPolicyConfigMutationTarget',
+      rule: 'policy-protection:findPolicyConfigMutationTargetInSemanticFacts',
     };
   const gitMetadataTarget = findGitMetadataMutationTargetInSemanticFacts(
     facts,
@@ -238,8 +236,7 @@ function findPreAnalysisBlock(command: string, options: AnalyzeInput) {
       reason: REASON_GIT_METADATA_PROTECTION,
       target: gitMetadataTarget.target,
       ruleId: 'git-metadata-protection',
-      ruleModule: 'git-metadata-protection',
-      ruleFunction: 'findGitMetadataMutationTarget',
+      rule: 'git-metadata-protection:findGitMetadataMutationTargetInSemanticFacts',
     };
   const policy = options.policySnapshot.policy;
   const secretTarget =
@@ -253,8 +250,7 @@ function findPreAnalysisBlock(command: string, options: AnalyzeInput) {
       reason: REASON_SECRET_PROTECTION,
       target: secretTarget.target,
       ruleId: secretTarget.ruleId,
-      ruleModule: 'secret-protection',
-      ruleFunction: 'findSensitiveTarget',
+      rule: 'secret-protection:findSensitiveTargetInSemanticFacts',
     };
   return null;
 }

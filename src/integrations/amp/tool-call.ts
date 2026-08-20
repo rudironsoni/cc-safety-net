@@ -12,7 +12,6 @@ import * as guardEngine from '@/integrations/runtime';
 import * as invocationDomain from '@/ir/invocation';
 import * as toolRouting from '@/parser/tool-input';
 import { ENV_FLAGS, envTruthy, shouldRecordAllowedCommands } from '@/policy/env';
-import type { PolicySnapshotOptions } from '@/policy/snapshot';
 
 type AmpApi = {
   system: { workspaceRoot: URI | null };
@@ -38,7 +37,6 @@ type MalformedAmpToolCall = {
 
 type AmpHandlerOptions = {
   guardDependencies?: Partial<guardEngine.GuardDependencies>;
-  policyOptions?: PolicySnapshotOptions;
 };
 
 export const handleAmpToolCall = createAmpToolCallHandler();
@@ -71,7 +69,6 @@ function handleAmpToolCallWithDependencies(
     const evaluation = guardEngine.evaluateRuntimeGuard(toolCall, {
       guard: {
         auditAllowed: shouldRecordAllowedCommands(),
-        policyOptions: options.policyOptions,
         dependencies: options.guardDependencies,
       },
       audit: {

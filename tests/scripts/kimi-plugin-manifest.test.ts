@@ -10,7 +10,7 @@ function readManifest() {
   return JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as {
     name: string;
     version: string;
-    hooks: Array<{ event: string; matcher: string; command: string; timeout: number }>;
+    hooks: Array<{ event: string; command: string; timeout: number }>;
   };
 }
 
@@ -33,11 +33,11 @@ describe('Kimi Code plugin manifest', () => {
     expect(readManifest().version).toBe(pkg.version);
   });
 
-  test('declares one blocking Bash hook that runs the packaged Kimi adapter', () => {
+  test('declares one blocking hook that runs the packaged Kimi adapter for every tool', () => {
     const hooks = readManifest().hooks;
     expect(hooks).toHaveLength(1);
     expect(hooks[0]?.event).toBe('PreToolUse');
-    expect(hooks[0]?.matcher).toBe('Bash');
+    expect(Object.hasOwn(hooks[0] ?? {}, 'matcher')).toBeFalse();
     expect(hooks[0]?.command).toBe('node ./dist/bin/cc-safety-net.js hook --kimi-code');
     expect(hooks[0]?.timeout).toBe(30);
   });

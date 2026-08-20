@@ -113,9 +113,13 @@ export function createCCSafetyNetPlugin(
 /** @internal */
 export function resolveOpenCodeShellRoute(
   configuredShell: unknown,
+  platform = process.platform,
+  environmentShell = process.env.SHELL,
 ): invocationDomain.CommandToolKind {
-  if (typeof configuredShell !== 'string') return 'auto';
-  const executable = configuredShell
+  if (typeof configuredShell !== 'string' && platform === 'win32') return 'powershell';
+  const candidate = typeof configuredShell === 'string' ? configuredShell : environmentShell;
+  if (typeof candidate !== 'string') return 'auto';
+  const executable = candidate
     .trim()
     .split(/[\\/]/)
     .at(-1)
@@ -143,20 +147,21 @@ function resolveOpenCodeExecutionCwd(configCwd: string, toolInput: unknown): str
   if (typeof workdir !== 'string' || workdir.trim() === '') return null;
   const resolvedWorkdir =
     process.platform === 'win32' ? normalizeOpenCodeWindowsWorkdir(workdir) : workdir;
-  if (!resolvedWorkdir) return null;
 
   const executionCwd = resolve(configCwd, resolvedWorkdir);
   return isUsableDirectory(executionCwd) ? executionCwd : null;
 }
 
 /** @internal */
-export function normalizeOpenCodeWindowsWorkdir(workdir: string): string | null {
+export function normalizeOpenCodeWindowsWorkdir(workdir: string): string {
   const normalized = workdir
     .replace(/^\/([a-zA-Z]):(?:[\\/]|$)/, (_, drive: string) => `${drive.toUpperCase()}:/`)
     .replace(/^\/([a-zA-Z])(?:[\\/]|$)/, (_, drive: string) => `${drive.toUpperCase()}:/`)
     .replace(/^\/cygdrive\/([a-zA-Z])(?:[\\/]|$)/, (_, drive: string) => `${drive.toUpperCase()}:/`)
     .replace(/^\/mnt\/([a-zA-Z])(?:[\\/]|$)/, (_, drive: string) => `${drive.toUpperCase()}:/`);
-  return normalized.startsWith('/') ? null : normalized;
+  // Slash-rooted paths OpenCode does not rewrite (`/tmp`) stay as they are: the host hands them to
+  // `cygpath` for POSIX shells, else resolves them against the config root, and runs the command.
+  return normalized;
 }
 
 function isUsableDirectory(path: string): boolean {

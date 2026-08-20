@@ -5,6 +5,7 @@
  */
 
 import { statSync } from 'node:fs';
+import { AMP_PLUGIN_ENTRY } from '../src/integrations/amp/artifact';
 import { getBundledOutputs, isRootDeclarationOutput } from './build-output';
 import { buildAmpBundle, buildOpenClawBundle, buildRuntimeBundles } from './build-runtime';
 import { generateThirdPartyLicenses } from './generate-third-party-licenses';
@@ -74,7 +75,7 @@ console.log(
   `  dist/pi/index.js           ${(statSync('dist/pi/index.js').size / 1024).toFixed(2)} KB`,
 );
 console.log(
-  `  dist/amp/cc-safety-net.ts  ${(statSync('dist/amp/cc-safety-net.ts').size / 1024).toFixed(2)} KB`,
+  `  dist/amp/${AMP_PLUGIN_ENTRY}  ${(statSync(`dist/amp/${AMP_PLUGIN_ENTRY}`).size / 1024).toFixed(2)} KB`,
 );
 console.log(
   `  dist/openclaw/cc-safety-net/index.js  ${(statSync('dist/openclaw/cc-safety-net/index.js').size / 1024).toFixed(2)} KB`,

@@ -705,8 +705,7 @@ function analyzeCommandView(
     );
     options.trace?.recordSegment({
       type: 'rule-check',
-      ruleModule: 'analyze/powershell/remove-item.ts',
-      ruleFunction: 'analyzePowerShellCommandViewMatch',
+      rule: 'analyzer/powershell/remove-item.ts:analyzePowerShellCommandViewMatch',
       matched: !!match,
       reason: match?.reason,
     });
@@ -737,7 +736,7 @@ function analyzeCommandView(
       };
     }
     options.trace?.recordSegment({ type: 'dangerous-text', token: segment[0], matched: false });
-    return finalizeAnalyzedCommandView(
+    const deferredResult = finalizeAnalyzedCommandView(
       commandView,
       heredocReason,
       state,
@@ -745,6 +744,9 @@ function analyzeCommandView(
       literalShellInput,
       options,
     );
+    if (deferredResult) return deferredResult;
+    applyShellGitContextEnvSegment(segment, state.shellGitContextState);
+    return null;
   }
 
   const result = analyzeSegment(commandView.words, depth, {

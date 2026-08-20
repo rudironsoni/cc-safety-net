@@ -1,4 +1,4 @@
-import { afterAll, expect } from 'bun:test';
+import { afterAll, expect, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -212,6 +212,29 @@ export function withEnv<T>(env: Record<string, string | undefined>, fn: () => T)
   } catch (error) {
     restore();
     throw error;
+  }
+}
+
+export async function captureConsoleOutput<T>(
+  fn: (output: { stdout: string[]; stderr: string[] }) => T | Promise<T>,
+) {
+  const output = { stdout: [] as string[], stderr: [] as string[] };
+  const log = spyOn(console, 'log').mockImplementation((...parts: unknown[]) =>
+    output.stdout.push(parts.map(String).join(' ')),
+  );
+  const error = spyOn(console, 'error').mockImplementation((...parts: unknown[]) =>
+    output.stderr.push(parts.map(String).join(' ')),
+  );
+  const warn = spyOn(console, 'warn').mockImplementation((...parts: unknown[]) =>
+    output.stderr.push(parts.map(String).join(' ')),
+  );
+
+  try {
+    return { result: await fn(output), ...output };
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+    warn.mockRestore();
   }
 }
 

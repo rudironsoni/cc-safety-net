@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DetectContext, HookDetection } from '@/integrations/detect/context';
 import { stripJsonComments } from '@/integrations/jsonc';
+import { getOpenCodeConfigDir } from '@/integrations/opencode/install';
 
 /**
  * Detect OpenCode plugin configuration.
@@ -13,7 +14,7 @@ import { stripJsonComments } from '@/integrations/jsonc';
  */
 export function detect(context: DetectContext): HookDetection {
   const errors: string[] = [];
-  const configDir = join(context.homeDir, '.config', 'opencode');
+  const configDir = getOpenCodeConfigDir(context.homeDir);
   const candidates = ['opencode.json', 'opencode.jsonc'];
 
   for (const filename of candidates) {

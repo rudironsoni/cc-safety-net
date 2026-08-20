@@ -9,6 +9,7 @@
  * named exceptions in that test.
  */
 
+export { PathCanonicalizationLimitError } from '@/analyzer/path-canonicalization';
 export { isReservedTransparentWrapper } from '@/analyzer/transparent-wrappers';
 export { getAuditLogHomeDir, getAuditLogsDir } from '@/engine/audit';
 export { formatRelativeTime } from '@/engine/audit-display';
@@ -20,6 +21,8 @@ export {
   readAuditLogEntries,
 } from '@/engine/audit-scan';
 export { explainCommand } from '@/engine/explain';
+export { StructuralShellSyntaxLimitError } from '@/guards/semantic-facts';
+export { ToolInputLimitError } from '@/parser/tool-input';
 export {
   ENV_FLAGS,
   type EnvFlag,

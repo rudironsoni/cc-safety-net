@@ -32,22 +32,35 @@ const INSTALLED_PLUGIN_FILES = [
 ];
 
 /**
+ * OpenClaw runs both env overrides through `resolveUserPath`, which expands a leading `~` (alone or
+ * before a separator) against the resolved home. Using the literal value would point doctor and the
+ * install guard at a `~/…` directory that does not exist while the gateway loads the expanded one.
+ */
+function expandTilde(value: string, homeDir: string): string {
+  if (value === '~') return homeDir;
+  if (value.startsWith('~/') || value.startsWith('~\\')) return join(homeDir, value.slice(2));
+  return value;
+}
+
+/**
  * OpenClaw resolves its state directory as `OPENCLAW_STATE_DIR`, then the directory holding
  * `OPENCLAW_CONFIG_PATH`, then `~/.openclaw` (`resolveConfigDir` in OpenClaw's `src/utils.ts`).
  * Reading the same order keeps a relocated install visible instead of reported as absent.
  */
 function getOpenClawStateDir(homeDir: string): string {
   const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
-  if (stateDir) return stateDir;
+  if (stateDir) return expandTilde(stateDir, homeDir);
 
   const configPath = process.env.OPENCLAW_CONFIG_PATH?.trim();
-  return configPath ? dirname(configPath) : join(homeDir, '.openclaw');
+  return configPath ? dirname(expandTilde(configPath, homeDir)) : join(homeDir, '.openclaw');
 }
 
 /** OpenClaw's own config file: `OPENCLAW_CONFIG_PATH` when set, else `<state dir>/openclaw.json`. */
 export function getOpenClawConfigPath(homeDir: string): string {
   const configPath = process.env.OPENCLAW_CONFIG_PATH?.trim();
-  return configPath ? configPath : join(getOpenClawStateDir(homeDir), 'openclaw.json');
+  return configPath
+    ? expandTilde(configPath, homeDir)
+    : join(getOpenClawStateDir(homeDir), 'openclaw.json');
 }
 
 /** Where `openclaw plugins install <dir>` copies the plugin (`<state dir>/extensions/<id>`). */

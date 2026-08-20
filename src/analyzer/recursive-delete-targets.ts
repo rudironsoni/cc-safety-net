@@ -182,7 +182,7 @@ export function classifyRecursiveDeleteTarget(
     return { kind: 'root_or_home_target' };
   }
 
-  if (isCanonicalHomeTarget(target, ctx)) {
+  if (isCanonicalHomeTarget(target, ctx, targetIsLiteral)) {
     return { kind: 'root_or_home_target' };
   }
 
@@ -335,9 +335,20 @@ export function isDangerousRootOrHomeTarget(path: string, targetIsLiteral = fals
   return false;
 }
 
-function isCanonicalHomeTarget(target: string, ctx: RecursiveDeleteTargetContext): boolean {
+function isCanonicalHomeTarget(
+  target: string,
+  ctx: RecursiveDeleteTargetContext,
+  targetIsLiteral: boolean,
+): boolean {
   const trimmed = target.trim();
-  const candidate = trimmed.endsWith('/*') ? trimmed.slice(0, -2) : trimmed;
+  // A quoted literal `*` names a single file, not a glob over the directory contents.
+  const candidate = targetIsLiteral
+    ? trimmed
+    : trimmed === '*'
+      ? '.'
+      : trimmed.endsWith('/*')
+        ? trimmed.slice(0, -2)
+        : trimmed;
   if (!candidate) return false;
   try {
     const base = isAbsolute(candidate)

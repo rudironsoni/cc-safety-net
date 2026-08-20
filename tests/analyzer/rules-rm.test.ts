@@ -6,7 +6,6 @@ import { textCommandWords } from '@/analyzer/command-words';
 import {
   type AnalyzeRmOptions,
   analyzeRmMatch as analyzeRmMatchWithEnvironment,
-  analyzeRm as analyzeRmWithEnvironment,
 } from '@/analyzer/rm';
 import type { CommandWord } from '@/ir/command';
 import { TEST_ENVIRONMENT, testEnvironment } from '../helpers/environment.ts';
@@ -24,19 +23,15 @@ import {
 type RmTestOptions = Omit<AnalyzeRmOptions, 'environment' | 'protectedGitMetadata'> &
   Partial<AnalyzeRmOptions>;
 
-const analyzeRm = (tokens: string[], options: RmTestOptions = {}) =>
-  analyzeRmWithEnvironment(tokens, {
-    environment: TEST_ENVIRONMENT,
-    protectedGitMetadata: null,
-    ...options,
-  });
-
 const analyzeRmMatch = (words: readonly CommandWord[], options: RmTestOptions = {}) =>
   analyzeRmMatchWithEnvironment(words, {
     environment: TEST_ENVIRONMENT,
     protectedGitMetadata: null,
     ...options,
   });
+
+const analyzeRm = (tokens: string[], options: RmTestOptions = {}) =>
+  analyzeRmMatch(textCommandWords(tokens), options)?.reason ?? null;
 
 describe('rm -rf blocked', () => {
   test('rm -rf blocked', () => {
@@ -352,6 +347,19 @@ describe('rm -rf allow paths', () => {
     ).toContain('shell variables');
   });
 
+  test('literal targets inside an allow path stay allowed in strict and paranoid mode', () => {
+    expect(
+      analyzeTestCommand('rm -rf /some/allowed/dir', { strict: true, config: policy }),
+    ).toBeNull();
+    expect(
+      analyzeTestCommand('rm -rf /some/allowed/dir', {
+        strict: true,
+        paranoidRm: true,
+        config: policy,
+      }),
+    ).toBeNull();
+  });
+
   test('allow paths bypass paranoid rm checks like trusted temp roots', () => {
     expect(
       analyzeTestCommand('rm -rf /some/allowed/dir', { paranoidRm: true, config: policy }),
@@ -416,6 +424,68 @@ describe('rm -rf cwd-aware', () => {
     try {
       assertBlocked('rm -rf build', 'rm -rf', tmpDir, testEnvironment({ HOME: tmpDir }));
     } finally {
+      cleanup();
+    }
+  });
+
+  test('rm -rf bare glob in home cwd blocked in standard mode', () => {
+    setup();
+    try {
+      assertBlocked(
+        'rm -rf *',
+        'targeting root or home',
+        tmpDir,
+        testEnvironment({ HOME: tmpDir }),
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('rm -rf bare glob in home cwd blocked as root or home in strict and paranoid modes', () => {
+    setup();
+    try {
+      const environment = testEnvironment({ HOME: tmpDir });
+      for (const level of ['strict', 'paranoid'] as const) {
+        expect(
+          analyzeTestCommand('rm -rf *', {
+            cwd: tmpDir,
+            environment,
+            config: { safety: { level } },
+          })?.ruleId,
+          level,
+        ).toBe('rm.recursive-force-root-or-home');
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("rm -rf quoted literal '*' in home cwd keeps home-cwd classification", () => {
+    setup();
+    try {
+      expect(
+        analyzeTestCommand("rm -rf '*'", {
+          cwd: tmpDir,
+          environment: testEnvironment({ HOME: tmpDir }),
+        })?.ruleId,
+      ).toBe('rm.recursive-force-home-cwd');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('rm -rf bare glob outside home keeps its dynamic-target classification', () => {
+    setup();
+    const home = mkdtempSync(join(tmpdir(), 'safety-net-test-home-'));
+    try {
+      const environment = testEnvironment({ HOME: home });
+      expect(analyzeTestCommand('rm -rf *', { cwd: tmpDir, environment })).toBeNull();
+      expect(
+        analyzeTestCommand('rm -rf *', { cwd: tmpDir, environment, strict: true })?.ruleId,
+      ).toBe('rm.recursive-force-dynamic-target');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
       cleanup();
     }
   });
@@ -862,6 +932,43 @@ describe('rm -rf cwd-aware', () => {
       const command = 'TMPDIR=/var/tmp-malicious rm -rf $TMPDIR/test-dir';
       assertAllowed(command, tmpDir);
       assertStrictBlocked(command, 'rm -rf', tmpDir);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('TMPDIR statement assignment with a word-splitting value is strict-only', () => {
+    setup();
+    try {
+      const command = 'TMPDIR="/tmp/safe /Users"; rm -rf $TMPDIR/literal';
+      assertAllowed(command, tmpDir);
+      assertStrictBlocked(command, 'rm -rf target contains shell variables', tmpDir);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('statement-assigned dynamic suffixes under literal temp roots are strict-only', () => {
+    setup();
+    try {
+      for (const command of [
+        'name=../Users; rm -rf /tmp/$name',
+        'name=../Users; rm -rf /var/tmp/$name',
+      ]) {
+        assertAllowed(command, tmpDir);
+        assertStrictBlocked(command, 'rm -rf target contains shell variables', tmpDir);
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('brace traversal under a literal temp root is blocked in both modes', () => {
+    setup();
+    try {
+      const command = 'rm -rf /tmp/{safe,../Users}';
+      assertBlocked(command, 'rm -rf outside cwd', tmpDir);
+      assertStrictBlocked(command, 'rm -rf outside cwd', tmpDir);
     } finally {
       cleanup();
     }

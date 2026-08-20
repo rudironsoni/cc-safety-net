@@ -1,6 +1,6 @@
 {
   "name": "cc-safety-net",
-  "version": "2.0.3",
+  "version": "2.0.8",
   "description": "A coding agent CLI hook - block destructive commands and secret file access",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,7 +25,6 @@
     "build": "bun run clean && bun run scripts/build.ts",
     "build:types": "tsc --project tsconfig.build.json --emitDeclarationOnly --declaration",
     "build:schema": "bun run scripts/build-schema.ts",
-    "verify:build": "bun run scripts/verify-deterministic-build.ts",
     "verify:package": "bun run scripts/verify-package.ts",
     "verify:repository-plugin": "bun run scripts/verify-repository-plugin.ts",
     "verify:coverage": "bun run scripts/verify-coverage.ts",
@@ -41,7 +40,7 @@
     "test:e2e": "bun test tests/e2e",
     "test:e2e:stability": "bun test tests/e2e --randomize --rerun-each 3",
     "test:e2e:live": "CC_SAFETY_NET_E2E_LIVE=1 bun test tests/e2e-live",
-    "test:coverage": "AGENT=1 bun test tests --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "test:coverage": "AGENT=1 bun test tests --path-ignore-patterns 'tests/e2e-live/**' --coverage --coverage-reporter=text --coverage-reporter=lcov",
     "cc-safety-net": "bun run src/cli/cc-safety-net.ts",
     "prepare": "lefthook install"
   },

@@ -72,15 +72,6 @@ export interface ChildCommandAnalysisOptions {
   rmDynamicMatch?: DestructiveCommandRuleMatch;
 }
 
-/** @internal */
-export function analyzeChildCommand(
-  tokens: readonly string[],
-  context: ChildCommandAnalysisContext,
-  options: ChildCommandAnalysisOptions = {},
-): string | null {
-  return analyzeChildCommandMatch(tokens, context, options)?.reason ?? null;
-}
-
 export function analyzeChildCommandMatch(
   tokens: readonly string[],
   context: ChildCommandAnalysisContext,

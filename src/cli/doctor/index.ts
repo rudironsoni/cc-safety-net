@@ -75,7 +75,7 @@ async function collectDoctorReport(options: DoctorOptions): Promise<DoctorReport
   const hooks = detectAllHooks(cwd, {
     ampPluginListOutput: system.ampPluginListOutput,
     codexPluginListOutput: system.codexPluginListOutput,
-    copilotCliVersion: system.copilotCliVersion,
+    copilotCliVersion: system.versions['copilot-cli'],
   });
   const configInfo = getConfigInfo(cwd);
   const environment = getEnvironmentInfo();

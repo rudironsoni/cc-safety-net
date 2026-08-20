@@ -29,20 +29,9 @@ import { mockVersionFetcher, withStdoutColor } from '../../helpers.ts';
 function createSystemInfo(overrides: Partial<SystemInfo> = {}): SystemInfo {
   return {
     version: '0.6.0',
-    claudeCodeVersion: null,
-    antigravityCliVersion: null,
-    openCodeVersion: null,
-    codexCliVersion: null,
+    versions: {},
     codexPluginListOutput: null,
     ampPluginListOutput: null,
-    geminiCliVersion: null,
-    copilotCliVersion: null,
-    hermesAgentVersion: null,
-    kimiCodeVersion: null,
-    openClawVersion: null,
-    piCliVersion: null,
-    cursorVersion: null,
-    ampVersion: null,
     nodeVersion: '22.0.0',
     npmVersion: '10.0.0',
     bunVersion: '1.0.0',
@@ -777,6 +766,22 @@ describe('formatSummary', () => {
 });
 
 describe('formatFindingsSection', () => {
+  test.each([
+    ['warning', '[WARNING] test.warning'],
+    ['info', '[INFO] test.info'],
+  ] as const)('labels %s findings', (severity, expected) => {
+    const output = formatFindingsSection([
+      {
+        checkId: `test.${severity}`,
+        severity,
+        title: `${severity} title`,
+        detail: `${severity} detail`,
+      },
+    ]);
+
+    expect(output).toContain(expected);
+  });
+
   test('formats the same typed fields exposed by JSON', () => {
     const output = formatFindingsSection([
       {

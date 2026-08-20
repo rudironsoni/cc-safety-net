@@ -1,10 +1,20 @@
 # --- Project Specific ---
 .cursor
-.claude
-.agents
+.claude/*
+!.claude/skills
+.claude/skills/*
+!.claude/skills/ccsn-find-simplifications
+!.claude/skills/release-notes
+.agents/*
+!.agents/setup
+!.agents/resume
+!.agents/skills
+.agents/skills/*
+!.agents/skills/ccsn-find-simplifications
 .safety-net.json
 .opencode
 .gemini
+.factory
 artifacts
 .cc-safetynet-rules
 .cc-safety-net
@@ -12,6 +22,7 @@ coverage
 .codex
 .playwright
 .playwright-cli
+.factory
 codex-security-scans
 
 # --- Node.js ---
@@ -22,3 +33,4 @@ plans
 .impeccable
 DESIGN.md
 PRODUCT.md
+research

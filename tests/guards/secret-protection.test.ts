@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -16,6 +16,7 @@ import {
 import type { ToolRoute } from '@/ir/invocation';
 import type { SecretProtectionConfig } from '@/ir/policy';
 import { getNonCommandToolInputKind, normalizeToolName } from '@/parser/tool-input';
+import { getCCSafetyNetEnvModes } from '@/policy/env';
 import {
   SECRET_CODING_CLI_RULES,
   SECRET_PROTECTION_RULE_IDS,
@@ -343,16 +344,46 @@ describe('secret protection path matching', () => {
     });
   });
 
-  test('normalizes Windows-style separators', () => {
-    const cwd = join(tmpdir(), 'secret-protection-project');
+  test.skipIf(process.platform !== 'win32')(
+    '[windows] normalizes Windows-style separators, including relative ones',
+    () => {
+      const cwd = join(tmpdir(), 'secret-protection-project');
 
-    expect(
-      findSensitivePathTarget(['protected\\child.txt'], cwd, {
-        disabledRules: new Set(),
-        denyPaths: ['protected'],
-      }),
-    ).not.toBeNull();
-  });
+      expect(
+        findSensitivePathTarget(['protected\\child.txt'], cwd, {
+          disabledRules: new Set(),
+          denyPaths: ['protected'],
+        }),
+      ).not.toBeNull();
+    },
+  );
+
+  // A relative backslash path and a POSIX regex are the same string: only what
+  // follows the backslash differs, and `protected\child.txt` cannot be opened on
+  // POSIX anyway. So off Windows the backslash keeps its POSIX meaning (an
+  // escape) and only drive-qualified or UNC candidates are separator-normalized.
+  test.skipIf(process.platform === 'win32')(
+    'normalizes drive-qualified and UNC separators off Windows',
+    () => {
+      const cwd = join(tmpdir(), 'secret-protection-project');
+
+      // Drive-qualified and UNC candidates still split on backslashes, so the
+      // built-in basename rules keep matching them off Windows.
+      expect(findSensitivePathTarget(['C:\\Users\\me\\.npmrc'], cwd)?.ruleId).toBe(
+        'secret.basename.npmrc',
+      );
+      expect(findSensitivePathTarget(['\\\\server\\share\\.netrc'], cwd)?.ruleId).toBe(
+        'secret.basename.netrc',
+      );
+      // A relative backslash candidate is a literal filename here, not a path.
+      expect(
+        findSensitivePathTarget(['protected\\child.txt'], cwd, {
+          disabledRules: new Set(),
+          denyPaths: ['protected'],
+        }),
+      ).toBeNull();
+    },
+  );
 
   test('allows generic secrets directories while preserving sensitive filename rules', () => {
     const cwd = join(tmpdir(), 'secret-protection-project');
@@ -511,7 +542,12 @@ describe('secret protection command target extraction', () => {
   test('allows metadata-only discovery in standard mode and blocks it in strict mode', () => {
     const cwd = join(tmpdir(), 'secret-protection-project');
 
-    for (const command of ['test -f ~/.ssh/id_rsa', 'find ~/.ssh -type f']) {
+    for (const command of [
+      'test -f ~/.ssh/id_rsa',
+      'find ~/.ssh -type f',
+      'ls -la ~/.ssh',
+      'stat .env',
+    ]) {
       expectAllowedOnlyInStandardMode(command, cwd);
     }
   });
@@ -618,6 +654,25 @@ describe('secret protection command target extraction', () => {
     }
   });
 
+  test('blocks inert Node and Bun inline diagnostic data under the paranoid preset', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+    const strict = withEnv(
+      { CC_SAFETY_NET_LEVEL: 'paranoid' },
+      () => getCCSafetyNetEnvModes().strict,
+    );
+
+    expect(strict).toBe(true);
+    for (const command of [
+      `node -e 'const path = ".env"; console.log(path)'`,
+      `bun -e 'const paths = [".env"]; for (const path of paths) console.log(path)'`,
+    ]) {
+      expect(
+        findSensitiveTargetInCommand(command, cwd, undefined, { strict })?.ruleId,
+        command,
+      ).toBe('secret.basename.env');
+    }
+  });
+
   test('keeps recognizable Node and Bun inline sensitive access blocked in standard mode', () => {
     const cwd = join(tmpdir(), 'secret-protection-project');
 
@@ -689,6 +744,14 @@ describe('secret protection command target extraction', () => {
         cwd,
       ),
     ).not.toBeNull();
+    // base64url alphabet: 'YWI_Ly5lbnY=' decodes to 'ab?/.env' only when '_' is
+    // mapped back to '/'; the standard-alphabet twin below shares no token bytes.
+    expect(
+      findSensitiveTargetInCommand(
+        `node -e "const p = Buffer.from('YWI_Ly5lbnY=', 'base64').toString(); require('fs').readFileSync(p, 'utf8')"`,
+        cwd,
+      ),
+    ).toMatchObject({ ruleId: 'secret.basename.env' });
   });
 
   test('does not flag interpreters running benign code', () => {
@@ -795,6 +858,13 @@ for runtime in /Users/kenryu/.nvm/versions/node/v26.0.0/bin/node /Users/kenryu/.
         cwd,
       ),
     ).not.toBeNull();
+    // base64url alphabet: dropping the '-'/'_' mapping leaves every token above
+    // decoding fine while this one silently stops resolving to 'ab?/.env'.
+    expect(findSensitiveTargetInCommand('cat $(echo YWI_Ly5lbnY= | base64 -d)', cwd)).toMatchObject(
+      {
+        ruleId: 'secret.basename.env',
+      },
+    );
   });
 
   test('blocks legacy backtick substitutions that read sensitive operands', () => {
@@ -1497,6 +1567,21 @@ describe('secret protection distinctive basenames anywhere', () => {
 
     expect(findSensitivePathTarget(['id_dsa.pub'], cwd)).toBeNull();
   });
+
+  test('bounds basename matching on a pathological token', () => {
+    // The private-key basename rules are `^.*_(rsa|dsa|ed25519|ecdsa)$` shaped:
+    // editing one into a nested quantifier keeps every short fixture correct while
+    // the underscore run below backtracks catastrophically.
+    const cwd = join(tmpdir(), 'secret-protection-project');
+    const underscores = '_'.repeat(10000);
+
+    const started = performance.now();
+    expect(findSensitiveTargetInCommand(`cat ${underscores}x`, cwd)).toBeNull();
+    expect(findSensitiveTargetInCommand(`cat ${underscores}_rsa`, cwd)).toMatchObject({
+      ruleId: 'secret.pattern.ssh-key-basename',
+    });
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
 });
 
 describe('secret protection home-anchored credential locations', () => {
@@ -1562,24 +1647,27 @@ describe('secret protection home-anchored credential locations', () => {
 
   test('does not block home-only config paths outside ~ (avoids repo false positives)', () => {
     const cwd = join(tmpdir(), 'secret-protection-project');
+    const otherHome = join(tmpdir(), 'secret-protection-other-home');
 
-    for (const target of [
-      '/home/user/.aws/config',
-      '/home/user/.kube/config',
-      '/home/user/.docker/config.json',
-      '/home/user/.config/gh/hosts.yml',
-      '/home/user/.config/gcloud',
-      '/home/user/.config/gcloud/application_default_credentials.json',
-      'tests/fixtures/.ssh/config',
-      '.aws/README.md',
-      'infra/.kube/config',
-      'infra/.kube/config.bak',
-      'docs/.docker/config.json',
-      'docs/.docker/config.json.old',
-      'deploy/.config/gh/hosts.yml',
-    ]) {
-      expect(findSensitivePathTarget([target], cwd), target).toBeNull();
-    }
+    withEnv({ HOME: join(tmpdir(), 'secret-protection-home') }, () => {
+      for (const target of [
+        join(otherHome, '.aws', 'config'),
+        join(otherHome, '.kube', 'config'),
+        join(otherHome, '.docker', 'config.json'),
+        join(otherHome, '.config', 'gh', 'hosts.yml'),
+        join(otherHome, '.config', 'gcloud'),
+        join(otherHome, '.config', 'gcloud', 'application_default_credentials.json'),
+        'tests/fixtures/.ssh/config',
+        '.aws/README.md',
+        'infra/.kube/config',
+        'infra/.kube/config.bak',
+        'docs/.docker/config.json',
+        'docs/.docker/config.json.old',
+        'deploy/.config/gh/hosts.yml',
+      ]) {
+        expect(findSensitivePathTarget([target], cwd), target).toBeNull();
+      }
+    });
   });
 });
 
@@ -2218,5 +2306,610 @@ describe('secret protection public keys in sensitive directories', () => {
     ]) {
       expect(findSensitivePathTarget([target], cwd), target).toBeNull();
     }
+  });
+});
+
+describe('secret protection POSIX backslash handling', () => {
+  // On POSIX a backslash is an escape character, not a path separator. Regex
+  // arguments that survive shell quoting therefore reach the scanner with the
+  // backslash intact, and normalizing it to `/` turned `process\.env` into
+  // `process/.env`, whose basename is `.env`.
+  test('does not treat a POSIX backslash as a path separator', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const target of ['process\\.env', 'fix\\.env', 'x\\.npmrc', 'a\\.netrc']) {
+      expect(findSensitivePathTarget([target], cwd), target).toBeNull();
+    }
+  });
+
+  test('leaves regex arguments to unmodelled search tools alone', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const command of [
+      'git grep -n "process\\.env" -- .',
+      'git log --grep "fix\\.env"',
+      'git grep -n "\\.npmrc"',
+    ]) {
+      expect(
+        findSensitiveTargetInCommand(command, cwd, undefined, { strict: false }),
+        command,
+      ).toBeNull();
+    }
+  });
+
+  // Shell-level escapes are removed by the parser before matching, so dropping
+  // the normalization must not reopen `cat \.env`.
+  test('still blocks shell-escaped sensitive operands', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const command of ['cat \\.env', 'cat .en\\v', 'cat \\.npmrc']) {
+      expect(
+        findSensitiveTargetInCommand(command, cwd, undefined, { strict: false }),
+        command,
+      ).not.toBeNull();
+    }
+  });
+
+  test('still treats Windows-shaped candidates as paths', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const target of [
+      'C:\\Users\\me\\.npmrc',
+      'D:/projects/app/.env',
+      '\\\\server\\share\\.netrc',
+    ]) {
+      expect(findSensitivePathTarget([target], cwd), target).not.toBeNull();
+    }
+  });
+});
+
+describe('secret protection prefix rules require filename-shaped basenames', () => {
+  // `.env.` matched as an unbounded prefix, so an English sentence beginning
+  // with `.env.example)` was read as a path — and, because the exemption list
+  // matches the basename exactly, the template name inside prose was blocked
+  // while the template file itself is allowed.
+  test('ignores prose that merely begins with a sensitive prefix', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const target of [
+      '.env.example) and then some prose here',
+      '.env.production is documented in the README',
+      'id_rsa-based auth is fine for this repo',
+      'id_ed25519_or_similar keys are covered below',
+    ]) {
+      expect(findSensitivePathTarget([target], cwd), target).toBeNull();
+    }
+  });
+
+  test('ignores interpreter string literals that are prose, not paths', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+    const command = 'python3 -c "x = \'.env.example) and then some prose here\'"';
+
+    expect(findSensitiveTargetInCommand(command, cwd, undefined, { strict: false })).toBeNull();
+  });
+
+  test('still blocks real env variants and rename-shielded keys', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const target of [
+      '.env.production',
+      '.env.production.local',
+      '/app/.env.ci',
+      'id_rsa-old',
+      'id_rsa.bak',
+    ]) {
+      expect(findSensitivePathTarget([target], cwd), target).not.toBeNull();
+    }
+  });
+});
+
+describe('secret protection remote URLs are not local paths', () => {
+  // Fetching a public template over https reads nothing on this machine, so a
+  // remote URL must not be matched against local secret-path rules.
+  test('ignores http and https URLs', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const target of [
+      'https://raw.githubusercontent.com/o/r/main/.env.test',
+      'https://example.com/x/.npmrc',
+      'https://example.com/a/credentials',
+      'http://example.com/keys/id_rsa',
+    ]) {
+      expect(findSensitivePathTarget([target], cwd), target).toBeNull();
+    }
+  });
+
+  test('ignores remote URLs passed to a fetching command', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const command of [
+      'curl -sL https://raw.githubusercontent.com/o/r/main/.env.test',
+      'wget https://example.com/a/credentials',
+    ]) {
+      expect(
+        findSensitiveTargetInCommand(command, cwd, undefined, { strict: false }),
+        command,
+      ).toBeNull();
+    }
+  });
+
+  test('still blocks file: URLs and local operands beside a URL', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    expect(findSensitivePathTarget([pathToFileURL('/tmp/app/.env').href], cwd)).not.toBeNull();
+    // `file://localhost/...` normalizes to an empty host, but any other file
+    // host keeps it — so the scheme check, not the host check, is what keeps
+    // these local.
+    expect(findSensitivePathTarget(['file://localhost/tmp/app/.env'], cwd)).not.toBeNull();
+    expect(findSensitivePathTarget(['file://otherhost/home/u/.env'], cwd)).not.toBeNull();
+    expect(
+      findSensitiveTargetInCommand('curl -sL https://example.com/x -o .env', cwd, undefined, {
+        strict: false,
+      }),
+    ).not.toBeNull();
+  });
+});
+
+describe('secret protection URL parsing is not pattern matching', () => {
+  // `new URL()` accepts a drive letter as a scheme, so host emptiness — not the
+  // scheme — is what separates a remote address from a Windows path.
+  test('a drive-qualified Windows path is never mistaken for a remote URL', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    expect(findSensitivePathTarget(['C:\\Users\\me\\.npmrc'], cwd)?.ruleId).toBe(
+      'secret.basename.npmrc',
+    );
+    expect(findSensitivePathTarget(['c:/Users/me/.env'], cwd)?.ruleId).toBe('secret.basename.env');
+  });
+
+  test('scheme casing, userinfo and ports do not change the verdict', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const target of [
+      'HTTPS://EXAMPLE.COM/x/.env.test',
+      'https://user:pass@example.com/x/.npmrc',
+      'https://example.com:8443/x/credentials',
+    ]) {
+      expect(findSensitivePathTarget([target], cwd), target).toBeNull();
+    }
+  });
+
+  // http and https always resolve an authority (`http:///etc/x` parses with host
+  // `etc`), so a genuinely hostless candidate needs a non-special scheme. Those
+  // address nothing remote and must stay local paths.
+  test('a hostless scheme is still treated as a local path', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    expect(findSensitivePathTarget(['customscheme:/etc/.npmrc'], cwd)?.ruleId).toBe(
+      'secret.basename.npmrc',
+    );
+  });
+
+  test('user deny paths still apply to remote URLs', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    expect(
+      findSensitivePathTarget(['https://example.com/internal/secret.txt'], cwd, {
+        disabledRules: new Set(),
+        denyPaths: ['https://example.com/internal/secret.txt'],
+      }),
+    ).not.toBeNull();
+  });
+});
+
+describe('secret protection prefix rules trust the filesystem over shape', () => {
+  // The whitespace heuristic must not lose a real duplicate: macOS names copies
+  // `<file> copy`, so `.env.production copy` is a genuine secret on disk.
+  test('an existing sensitive file with spaces is still matched', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'secret-protection-copy-'));
+    try {
+      writeFileSync(join(dir, '.env.production copy'), 'TOKEN=1');
+      writeFileSync(join(dir, 'id_rsa-old copy'), 'KEY');
+
+      expect(findSensitivePathTarget(['.env.production copy'], dir)?.ruleId).toBe(
+        'secret.pattern.env-variant',
+      );
+      expect(findSensitivePathTarget(['id_rsa-old copy'], dir)).not.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('prose that does not exist on disk is still ignored', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'secret-protection-prose-'));
+    try {
+      expect(findSensitivePathTarget(['.env.example) and then some prose here'], dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('secret protection filesystem probe never throws out of the guard', () => {
+  // `entryKind` uses lstat with `throwIfNoEntry: false`, which suppresses ENOENT
+  // but NOT ENAMETOOLONG. An oversized candidate must answer "not a path"
+  // instead of propagating an exception out of a security guard.
+  test('an oversized candidate is answered, not thrown', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+    const oversized = `.env.${'a b'.repeat(4000)}`;
+
+    expect(() => findSensitivePathTarget([oversized], cwd)).not.toThrow();
+    expect(findSensitivePathTarget([oversized], cwd)).toBeNull();
+  });
+
+  test('an unreadable or looping candidate is answered, not thrown', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'secret-protection-loop-'));
+    try {
+      symlinkSync(join(dir, 'loop'), join(dir, 'loop'));
+      expect(() => findSensitivePathTarget(['.env.prod copy'], dir)).not.toThrow();
+      expect(() => findSensitiveTargetInCommand('cat "loop/.env.a b"', dir)).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('secret protection home rules survive a symlinked credential directory', () => {
+  // Dotfile managers (chezmoi, stow), password managers and encrypted volumes
+  // routinely make ~/.ssh and ~/.aws symlinks. Canonicalizing the candidate
+  // rewrites it to the link TARGET, which no longer starts with `~/.ssh`, so
+  // resolving the link silently defeated the rule that names it.
+  function homeWithSymlinkedCredentials() {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-home-'));
+    mkdirSync(join(home, 'vault', 'ssh'), { recursive: true });
+    mkdirSync(join(home, 'vault', 'aws'), { recursive: true });
+    symlinkSync(join(home, 'vault', 'ssh'), join(home, '.ssh'), 'dir');
+    symlinkSync(join(home, 'vault', 'aws'), join(home, '.aws'), 'dir');
+    writeFileSync(join(home, 'vault', 'ssh', 'config'), 'Host *');
+    writeFileSync(join(home, 'vault', 'ssh', 'work_deploy_key'), 'KEY');
+    writeFileSync(join(home, 'vault', 'aws', 'config'), '[default]');
+    return home;
+  }
+
+  test('blocks credential files under a symlinked ~/.ssh and ~/.aws', () => {
+    const home = homeWithSymlinkedCredentials();
+    try {
+      withEnv({ HOME: home }, () => {
+        for (const target of [
+          '~/.ssh',
+          '~/.ssh/config',
+          '~/.ssh/work_deploy_key',
+          '~/.aws',
+          '~/.aws/config',
+        ]) {
+          expect(findSensitivePathTarget([target], home), target).not.toBeNull();
+        }
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('blocks the same paths written absolutely rather than through ~', () => {
+    const home = homeWithSymlinkedCredentials();
+    try {
+      withEnv({ HOME: home }, () => {
+        expect(findSensitivePathTarget([join(home, '.ssh', 'config')], home)).not.toBeNull();
+        expect(
+          findSensitiveTargetInCommand(`cat ${join(home, '.ssh', 'config')}`, home, undefined, {
+            strict: false,
+          }),
+        ).not.toBeNull();
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== 'win32')(
+    '[windows] blocks a differently-cased absolute spelling of a symlinked ~/.ssh path',
+    () => {
+      const home = homeWithSymlinkedCredentials();
+      try {
+        withEnv({ HOME: home }, () => {
+          // Windows paths are case-insensitive: this lowercased spelling names
+          // the same file, and the un-resolved home comparison must still match.
+          expect(
+            findSensitivePathTarget([join(home, '.ssh', 'config').toLowerCase()], home),
+          ).not.toBeNull();
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('a real (unlinked) home directory keeps working', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-realhome-'));
+    try {
+      mkdirSync(join(home, '.ssh'), { recursive: true });
+      writeFileSync(join(home, '.ssh', 'config'), 'Host *');
+      withEnv({ HOME: home }, () => {
+        expect(findSensitivePathTarget(['~/.ssh/config'], home)?.ruleId).toBe('secret.home.ssh');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('dot segments cannot route around the un-resolved comparison', () => {
+    const home = homeWithSymlinkedCredentials();
+    try {
+      withEnv({ HOME: home }, () => {
+        // `..` before the credential directory must not hide it from the rule.
+        expect(findSensitivePathTarget(['~/projects/../.ssh/config'], home)).not.toBeNull();
+        // `..` after the credential directory must not drag ordinary files into it.
+        expect(findSensitivePathTarget(['~/.ssh/../notes/todo.md'], home)).toBeNull();
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('an unrelated symlinked directory is still not sensitive', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-unrelated-'));
+    try {
+      mkdirSync(join(home, 'vault', 'notes'), { recursive: true });
+      symlinkSync(join(home, 'vault', 'notes'), join(home, 'notes'), 'dir');
+      writeFileSync(join(home, 'vault', 'notes', 'todo.md'), '# todo');
+      withEnv({ HOME: home }, () => {
+        expect(findSensitivePathTarget(['~/notes/todo.md'], home)).toBeNull();
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('secret protection exempts every documented explain invocation', () => {
+  // `explain` analyses a command string; it never opens the path it is asked
+  // about. The exemption existed only for the bare binary and the `bun <file>`
+  // form, so the invocations CONTRIBUTING actually prints — `bunx cc-safety-net
+  // explain ...` and the package script `bun run src/cli/cc-safety-net.ts
+  // explain ...` — blocked on their own argument.
+  test('allows explain through the runner forms the docs use', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    // The argument has to contain a separator: that is what makes its basename
+    // match a rule, and it is the shape a developer actually debugs with.
+    for (const command of [
+      `cc-safety-net explain 'cat ~/.ssh/id_rsa'`,
+      `bun dist/bin/cc-safety-net.js explain 'cat ~/.ssh/id_rsa'`,
+      `node dist/bin/cc-safety-net.js explain 'cat ~/.ssh/id_rsa'`,
+      `bun run src/cli/cc-safety-net.ts explain 'cat ~/.ssh/id_rsa'`,
+      `bun run dist/bin/cc-safety-net.js explain --json 'cat ~/.ssh/id_rsa'`,
+      `bunx cc-safety-net explain 'cat ~/.ssh/id_rsa'`,
+      `npx cc-safety-net explain 'cat ~/.ssh/id_rsa'`,
+      // The install docs print the -y form, so it must not block on its argument.
+      `npx -y cc-safety-net explain 'cat ~/.ssh/id_rsa'`,
+      `bunx --yes cc-safety-net explain 'cat ~/.ssh/id_rsa'`,
+    ]) {
+      expect(findSensitiveTargetInCommand(command, cwd), command).toBeNull();
+    }
+  });
+
+  test('does not widen the exemption beyond explain', () => {
+    const cwd = join(tmpdir(), 'secret-protection-project');
+
+    for (const command of [
+      `bun run src/cli/other.ts explain ~/.ssh/id_rsa`,
+      `bun run src/cli/cc-safety-net.ts hook --coding-cli ~/.ssh/id_rsa`,
+      `bunx some-other-tool explain ~/.ssh/id_rsa`,
+      `npx -y some-other-tool explain ~/.ssh/id_rsa`,
+      `bun run src/cli/cc-safety-net.ts explain 'git status' && cat .env`,
+      `bun run src/cli/cc-safety-net.ts run ~/.ssh/id_rsa`,
+      // A runner target is trusted by its exact documented name, never by its
+      // final path segment: npx resolves these to a different package or file.
+      `npx -y @evil/cc-safety-net explain ~/.ssh/id_rsa`,
+      `bunx ./vendor/cc-safety-net explain ~/.ssh/id_rsa`,
+      // Node has no `run` subcommand: this executes a local script named `run`
+      // and hands it the sensitive argument, so it is not the documented form.
+      `node run src/cli/cc-safety-net.ts explain ~/.ssh/id_rsa`,
+    ]) {
+      expect(findSensitiveTargetInCommand(command, cwd), command).not.toBeNull();
+    }
+  });
+});
+
+describe('secret protection allow paths', () => {
+  const cwd = join(tmpdir(), 'secret-protection-allow-project');
+
+  test('an exact-file allow entry suppresses pattern rules for that file only', () => {
+    const config = { disabledRules: new Set<string>(), denyPaths: [], allowPaths: ['.env.test'] };
+    expect(findSensitivePathTarget(['.env.test'], cwd, config)).toBeNull();
+    expect(findSensitivePathTarget(['.env.production'], cwd, config)?.ruleId).toBe(
+      'secret.pattern.env-variant',
+    );
+  });
+
+  test('a directory allow entry vouches for its descendants only', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-home-'));
+    try {
+      withEnv({ HOME: home }, () => {
+        const config = {
+          disabledRules: new Set<string>(),
+          denyPaths: [],
+          allowPaths: ['~/projects/vulcan'],
+        };
+        expect(findSensitivePathTarget(['~/projects/vulcan/.env.test'], home, config)).toBeNull();
+        expect(findSensitivePathTarget(['~/projects/other/.env.test'], home, config)?.ruleId).toBe(
+          'secret.pattern.env-variant',
+        );
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('a glob-shaped entry never widens the match beyond its literal text', () => {
+    // Validation rejects glob entries and the policy store repairs them away,
+    // so the guard compares every entry literally. A `*` that still reaches
+    // this far must not become a wildcard.
+    const config = {
+      disabledRules: new Set<string>(),
+      denyPaths: [],
+      allowPaths: ['**/.env.test', 'apps/*/.env.test'],
+    };
+    expect(findSensitivePathTarget(['.env.test'], cwd, config)?.ruleId).toBe(
+      'secret.pattern.env-variant',
+    );
+    expect(findSensitivePathTarget(['apps/web/.env.test'], cwd, config)?.ruleId).toBe(
+      'secret.pattern.env-variant',
+    );
+  });
+
+  test('an explicit deny beats an allow for the same path', () => {
+    const config = {
+      disabledRules: new Set<string>(),
+      denyPaths: ['.env.test'],
+      allowPaths: ['.env.test'],
+    };
+    expect(findSensitivePathTarget(['.env.test'], cwd, config)?.ruleId).toBe('secret.deny-path');
+  });
+
+  test('allow entries never suppress coding-CLI self-protection rules', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-cli-'));
+    try {
+      withEnv({ HOME: home, CLAUDE_CONFIG_DIR: '' }, () => {
+        const config = {
+          disabledRules: new Set<string>(),
+          denyPaths: [],
+          allowPaths: ['~/.claude'],
+        };
+        expect(findSensitivePathTarget(['~/.claude/.credentials.json'], home, config)?.ruleId).toBe(
+          'secret.cli.claude-code',
+        );
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('an entry that only resolves to home through env expansion never vouches for home', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-env-escape-'));
+    try {
+      withEnv({ HOME: home, CC_SAFETY_NET_HOME: join(home, '.cc-safety-net') }, () => {
+        // Validation rejects literal home-covering entries, but this one is
+        // non-absolute at save time and expands to home only at match time.
+        const config = {
+          disabledRules: new Set<string>(),
+          denyPaths: [],
+          allowPaths: ['$CC_SAFETY_NET_HOME/..'],
+        };
+        expect(findSensitivePathTarget(['~/.ssh/id_rsa'], home, config)?.ruleId).toBe(
+          'secret.home.ssh',
+        );
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('a relative entry that resolves to home is refused at match time', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-relative-escape-'));
+    try {
+      withEnv({ HOME: home }, () => {
+        const config = { disabledRules: new Set<string>(), denyPaths: [], allowPaths: ['..'] };
+        expect(
+          findSensitivePathTarget(['~/.ssh/id_rsa'], join(home, 'project'), config)?.ruleId,
+        ).toBe('secret.home.ssh');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('an entry that resolves into the guard configuration never vouches for it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-guard-config-'));
+    try {
+      withEnv({ HOME: home, CC_SAFETY_NET_HOME: '' }, () => {
+        // Relative at save time, so validation cannot judge it; it resolves to
+        // ~/.cc-safety-net only against this session's config cwd.
+        const config = {
+          disabledRules: new Set<string>(),
+          denyPaths: [],
+          allowPaths: ['.cc-safety-net'],
+        };
+        expect(
+          findSensitivePathTarget(['~/.cc-safety-net/credentials'], home, config)?.ruleId,
+        ).toBe('secret.basename.credentials');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('a symlinked default guard configuration keeps its refusal', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-guard-link-'));
+    const vault = mkdtempSync(join(tmpdir(), 'secret-protection-guard-vault-'));
+    try {
+      mkdirSync(join(vault, 'ccsn'), { recursive: true });
+      symlinkSync(join(vault, 'ccsn'), join(home, '.cc-safety-net'), 'dir');
+      withEnv({ HOME: home, CC_SAFETY_NET_HOME: '' }, () => {
+        // Candidate normalization follows the link to the vault, so the guard
+        // root must follow it too, or a vault-covering entry slips past it.
+        const config = { disabledRules: new Set<string>(), denyPaths: [], allowPaths: [vault] };
+        expect(
+          findSensitivePathTarget(['~/.cc-safety-net/credentials'], home, config)?.ruleId,
+        ).toBe('secret.basename.credentials');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  test('a canonical guard path under a symlinked home never vouches for the guard configuration', () => {
+    const real = mkdtempSync(join(tmpdir(), 'secret-protection-allow-real-home-'));
+    const linkParent = mkdtempSync(join(tmpdir(), 'secret-protection-allow-link-home-'));
+    const home = join(linkParent, 'home');
+    try {
+      symlinkSync(real, home, 'dir');
+      withEnv({ HOME: home, CC_SAFETY_NET_HOME: '' }, () => {
+        // Save-time validation compares entries against the LEXICAL
+        // ~/.cc-safety-net, so the canonical spelling behind the home symlink
+        // saves without an error. The target-side guard-root boundary resolves
+        // both sides through the filesystem and must still refuse it.
+        const config = {
+          disabledRules: new Set<string>(),
+          denyPaths: [],
+          allowPaths: [join(realpathSync(real), '.cc-safety-net')],
+        };
+        expect(
+          findSensitivePathTarget(['~/.cc-safety-net/credentials'], home, config)?.ruleId,
+        ).toBe('secret.basename.credentials');
+      });
+    } finally {
+      rmSync(linkParent, { recursive: true, force: true });
+      rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  test('a CC_SAFETY_NET_HOME override moves the guard-configuration refusal with it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'secret-protection-allow-guard-home-'));
+    const guardParent = mkdtempSync(join(tmpdir(), 'secret-protection-guard-parent-'));
+    const guardHome = join(guardParent, 'config');
+    try {
+      withEnv({ HOME: home, CC_SAFETY_NET_HOME: guardHome }, () => {
+        // Both entries are outside home, so save-time validation accepts them:
+        // one IS the guard root, the other is only an ANCESTOR of it. The
+        // target below the effective guard root must stay protected either way.
+        for (const entry of [guardHome, guardParent]) {
+          const config = { disabledRules: new Set<string>(), denyPaths: [], allowPaths: [entry] };
+          expect(
+            findSensitivePathTarget([join(guardHome, 'credentials')], home, config)?.ruleId,
+            entry,
+          ).toBe('secret.basename.credentials');
+        }
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(guardParent, { recursive: true, force: true });
+    }
+  });
+
+  test('matching is case-insensitive like every other secret rule', () => {
+    const config = { disabledRules: new Set<string>(), denyPaths: [], allowPaths: ['.ENV.TEST'] };
+    expect(findSensitivePathTarget(['.env.test'], cwd, config)).toBeNull();
   });
 });

@@ -23,6 +23,7 @@ export const DESTRUCTIVE_COMMAND_RULE_IDS = [
   'git.reset-hard',
   'git.reset-merge',
   'git.clean-force',
+  'git.rm-force',
   'git.push-force',
   'git.push-delete',
   'git.push-mirror',
@@ -199,6 +200,14 @@ export const DESTRUCTIVE_COMMAND_RULE_METADATA: readonly DestructiveCommandRuleM
     label: 'Git clean force',
     description: 'Blocks forced clean operations.',
     example: 'git clean -fd',
+    intent: 'use_alternative',
+  },
+  {
+    id: 'git.rm-force',
+    category: 'Git',
+    label: 'Git rm force',
+    description: 'Blocks forced removal of tracked files from the working tree.',
+    example: 'git rm -rf .',
     intent: 'use_alternative',
   },
   {

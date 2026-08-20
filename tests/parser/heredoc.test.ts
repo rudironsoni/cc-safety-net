@@ -93,6 +93,13 @@ E$OF`;
     expect(program.issues.map(({ code }) => code)).toContain('ambiguous-heredoc-delimiter');
   });
 
+  test('marks an unterminated quoted delimiter as ambiguous', () => {
+    const program = parseCommand('cat <<"EOF', 'posix');
+
+    expect(program.status).toBe('invalid');
+    expect(program.issues.map(({ code }) => code)).toContain('ambiguous-heredoc-delimiter');
+  });
+
   test('keeps here-strings separate from heredocs', () => {
     const view = projectCommandViews(parseCommand("cat <<<'rm -rf ~'", 'posix'))[0];
 

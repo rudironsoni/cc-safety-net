@@ -28,5 +28,11 @@ delete process.env.npm_config_cache;
 delete process.env.HERMES_HOME;
 delete process.env.OPENCLAW_STATE_DIR;
 delete process.env.OPENCLAW_CONFIG_PATH;
+// OpenCode's config and cache roots honour these before the homeDir a test passes, so a
+// developer who exports them runs the install, uninstall, and detect cases against their real
+// XDG directories (uninstall even rm -rf's the real plugin cache). Cleared here rather than per
+// suite for the same reason as the OpenClaw vars above. Cases that need a value set it with withEnv.
+delete process.env.XDG_CONFIG_HOME;
+delete process.env.XDG_CACHE_HOME;
 
 afterAll(() => rmSync(testHome, { recursive: true, force: true }));

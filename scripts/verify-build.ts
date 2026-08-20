@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
 import { posix, relative, resolve } from 'node:path';
 import pkg from '../package.json';
-import { AMP_MANAGED_HEADER } from '../src/integrations/amp/artifact';
+import { AMP_MANAGED_HEADER, AMP_PLUGIN_ENTRY } from '../src/integrations/amp/artifact';
 import {
   OPENCLAW_MANAGED_HEADER,
   OPENCLAW_PLUGIN_ENTRY_FILE,
@@ -10,7 +10,7 @@ import {
   OPENCLAW_PLUGIN_MANIFEST_FILE,
 } from '../src/integrations/openclaw/artifact';
 
-const AMP_ARTIFACT = 'dist/amp/cc-safety-net.ts';
+const AMP_ARTIFACT = `dist/amp/${AMP_PLUGIN_ENTRY}`;
 const OPENCLAW_PLUGIN_DIR = `dist/openclaw/${OPENCLAW_PLUGIN_ID}`;
 const OPENCLAW_ARTIFACT = `${OPENCLAW_PLUGIN_DIR}/${OPENCLAW_PLUGIN_ENTRY_FILE}`;
 
@@ -23,6 +23,7 @@ const BUILD_ENTRY_ARTIFACTS = [
   'dist/index.d.ts',
   'dist/index.js',
   'dist/pi/index.js',
+  'dist/vendor/zod.cjs',
 ] as const;
 
 function isBuildChunkArtifact(path: string): boolean {

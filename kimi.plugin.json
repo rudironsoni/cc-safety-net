@@ -1,6 +1,6 @@
 {
   "name": "cc-safety-net",
-  "version": "2.0.3",
+  "version": "2.0.8",
   "description": "Block destructive commands and secret-file access before Kimi Code runs a tool.",
   "keywords": ["kimi-code", "security", "safety", "guardrail", "pretooluse"],
   "author": {
@@ -19,7 +19,6 @@
   "hooks": [
     {
       "event": "PreToolUse",
-      "matcher": "Bash",
       "command": "node ./dist/bin/cc-safety-net.js hook --kimi-code",
       "timeout": 30
     }

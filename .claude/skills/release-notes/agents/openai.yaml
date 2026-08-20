@@ -1,0 +1,6 @@
+interface:
+  display_name: "Release Notes"
+  short_description: "Curate and publish GitHub release notes"
+  default_prompt: "Use $release-notes to curate and publish the latest existing GitHub Release notes."
+policy:
+  allow_implicit_invocation: false

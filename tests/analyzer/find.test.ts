@@ -43,6 +43,20 @@ describe('find -delete tests', () => {
     assertBlocked('find /some/allowed -depth -delete', 'find -delete');
   });
 
+  test('find delete allows allow-path targets in strict and paranoid mode', () => {
+    const config = { destructiveCommandAllowPaths: ['/some/allowed'] };
+    expect(
+      analyzeTestCommand('find /some/allowed/dir -depth -delete', { strict: true, config }),
+    ).toBeNull();
+    expect(
+      analyzeTestCommand('find /some/allowed/dir -depth -delete', {
+        strict: true,
+        paranoidRm: true,
+        config,
+      }),
+    ).toBeNull();
+  });
+
   test('find delete blocks symlink-following modes even under allow paths', () => {
     const config = { destructiveCommandAllowPaths: ['/some/allowed'] };
     expect(analyzeTestCommand('find -L /some/allowed -delete', { config })?.reason).toContain(

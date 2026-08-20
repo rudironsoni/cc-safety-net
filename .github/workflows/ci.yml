@@ -4,8 +4,14 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/assets/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.github/assets/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

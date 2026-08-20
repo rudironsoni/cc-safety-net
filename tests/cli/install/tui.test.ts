@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
+import { Writable } from 'node:stream';
+import { runInstallCommand } from '@/cli/install';
 import { canPromptInstallTargets, renderInstallSelection } from '@/cli/install/prompt';
 import {
   applyInstallTargetState,
@@ -13,7 +15,7 @@ import {
   orderInstallTargets,
   runInstallTargetsInOrder,
 } from '@/integrations/install/targets';
-import { withEnv, withTempDir } from '../../helpers';
+import { captureConsoleOutput, withEnv, withTempDir } from '../../helpers';
 import { createInstallPromptStreams, startInstallPrompt } from '../../integrations/hook-helpers';
 
 function makeChoice(target: InstallTarget, label: string, available: boolean) {
@@ -91,57 +93,48 @@ async function runInstallDispatchProbe(
     updateExitCode?: number;
   },
 ) {
-  const selectTargets =
-    options.selectedTargets === undefined
-      ? ''
-      : `,
-  selectTargets: async (_action, choices) => {
-    capturedChoices = choices.map((choice) => ({
-      target: choice.target,
-      available: choice.available,
-      unavailableReason: choice.unavailableReason,
-    }));
-    events.push("select:" + choices.length);
-    return ${JSON.stringify(options.selectedTargets)};
-  }`;
-  return spawnInstallEval<{
-    choices: CapturedChoice[];
-    exitCode: number;
-    events: string[];
-    output: string;
-  }>(
-    `
-import { Writable } from "node:stream";
-import { runInstallCommand } from "./src/cli/install/index.ts";
-
-const events = [];
-const outputChunks = [];
-let capturedChoices = [];
-console.log = () => {};
-const exitCode = await runInstallCommand("install", ${JSON.stringify(options.args ?? [])}, {
-  detectConfiguredTargets: async () => ${JSON.stringify(options.configuredTargets ?? [])},
-  output: new Writable({
-    write(chunk, _encoding, callback) {
-      outputChunks.push(String(chunk));
-      callback();
-    },
-  }),
-  probeTargets: (command) => {
-    events.push("probe:" + command[0]);
-    return command[0] === "kimi";
-  },
-  runUpdate: async () => {
-    events.push("update");
-    return ${options.updateExitCode ?? 0};
-  }${selectTargets}
-});
-
-process.stdout.write(
-  JSON.stringify({ choices: capturedChoices, exitCode, events, output: outputChunks.join("") }),
-);
-`,
-    { HOME: homeDir },
+  const choices: CapturedChoice[] = [];
+  const events: string[] = [];
+  const output: string[] = [];
+  const selectedTargets = options.selectedTargets;
+  const captured = await withEnv({ HOME: homeDir }, () =>
+    captureConsoleOutput(() =>
+      runInstallCommand('install', options.args ?? [], {
+        detectConfiguredTargets: async () => options.configuredTargets ?? [],
+        output: new Writable({
+          write(chunk, _encoding, callback) {
+            output.push(String(chunk));
+            callback();
+          },
+        }) as NodeJS.WriteStream,
+        probeTargets: (command) => {
+          events.push(`probe:${command[0]}`);
+          return command[0] === 'kimi';
+        },
+        runUpdate: async () => {
+          events.push('update');
+          return options.updateExitCode ?? 0;
+        },
+        ...(selectedTargets === undefined
+          ? {}
+          : {
+              selectTargets: async (_action, offered) => {
+                choices.push(
+                  ...offered.map((choice) => ({
+                    target: choice.target,
+                    available: choice.available,
+                    unavailableReason: choice.unavailableReason,
+                  })),
+                );
+                events.push(`select:${offered.length}`);
+                return selectedTargets;
+              },
+            }),
+      }),
+    ),
   );
+  expect(captured.stderr).toEqual([]);
+  return { choices, exitCode: captured.result, events, output: output.join('') };
 }
 
 /** Records the exact argv every runtime CLI receives during a bare `install`. */
@@ -189,54 +182,37 @@ async function runInstallGateProbe(
   homeDir: string,
   fixtures: Partial<Record<'codex' | 'claude', string>>,
 ) {
-  const binDir = join(homeDir, 'bin');
-  mkdirSync(binDir);
-  ['claude', 'gemini', 'copilot', 'pi', 'kimi', 'agy', 'opencode', 'codex'].forEach((command) => {
-    const fixture = fixtures[command as 'codex' | 'claude'];
-    if (!fixture) {
-      symlinkSync('/usr/bin/true', join(binDir, command));
-      return;
-    }
-    const commandPath = join(binDir, command);
-    writeFileSync(
-      commandPath,
-      `#!/usr/bin/env sh
-if [ "$*" = "plugin list" ]; then
-  printf '%s\\n' '${fixture}'
-fi
-`,
-    );
-    chmodSync(commandPath, 0o755);
-  });
-
-  return spawnInstallEval<{ choices: CapturedChoice[]; exitCode: number }>(
-    `
-import { Writable } from "node:stream";
-import { runInstallCommand } from "./src/cli/install/index.ts";
-
-let capturedChoices = [];
-console.log = () => {};
-const exitCode = await runInstallCommand("install", [], {
-  output: new Writable({
-    write(_chunk, _encoding, callback) {
-      callback();
-    },
-  }),
-  probeTargets: (command) => ${JSON.stringify(Object.keys(fixtures))}.includes(command[0]),
-  selectTargets: async (_action, choices) => {
-    capturedChoices = choices.map((choice) => ({
-      target: choice.target,
-      available: choice.available,
-      unavailableReason: choice.unavailableReason,
-    }));
-    return null;
-  },
-});
-
-process.stdout.write(JSON.stringify({ choices: capturedChoices, exitCode }));
-`,
-    { HOME: homeDir, PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}` },
+  const choices: CapturedChoice[] = [];
+  const captured = await withEnv({ HOME: homeDir }, () =>
+    captureConsoleOutput(() =>
+      runInstallCommand('install', [], {
+        // Serves the claude fixture too, so a regression that starts inspecting Claude Code
+        // through `claude plugin list` sees the enabled plugin and fails the gate assertions.
+        fetchVersion: async (command) =>
+          ({ 'codex plugin list': fixtures.codex, 'claude plugin list': fixtures.claude })[
+            command.join(' ')
+          ] ?? null,
+        output: new Writable({
+          write(_chunk, _encoding, callback) {
+            callback();
+          },
+        }) as NodeJS.WriteStream,
+        probeTargets: (command) => Object.keys(fixtures).includes(command[0] ?? ''),
+        selectTargets: async (_action, offered) => {
+          choices.push(
+            ...offered.map((choice) => ({
+              target: choice.target,
+              available: choice.available,
+              unavailableReason: choice.unavailableReason,
+            })),
+          );
+          return null;
+        },
+      }),
+    ),
   );
+  expect(captured.stderr).toEqual([]);
+  return { choices, exitCode: captured.result };
 }
 
 describe('install target availability', () => {

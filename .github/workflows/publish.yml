@@ -159,6 +159,10 @@ jobs:
             # GITHUB_TOKEN events do not start workflows, so the release event
             # from the edit above is silent; dispatch the notify workflow directly.
             gh workflow run notify-landing-page-release.yml --field tag="$TAG"
+            # Same GITHUB_TOKEN suppression applies to workflow_run listeners:
+            # this bot-dispatched run's completion emits no workflow_run event,
+            # so the release-notes workflow must be dispatched directly too.
+            gh workflow run release-notes.yml
           fi
           release_state > release.json
           bun run scripts/release-assets.ts --state release.json --expected SHA256SUMS --expected "$TARBALL" > release-plan.json

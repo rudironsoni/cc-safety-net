@@ -63,6 +63,39 @@ export function behavioralContractCases(paths: {
   const invalidConfig = {
     configFallbackReason: 'invalid policy config: run `cc-safety-net rule sync`.',
   };
+  // Everyday agent work must stay allowed at standard and strict safety: a widened
+  // destructive heuristic would start denying routine commands without failing any
+  // block-side case.
+  const everydayCommands = [
+    'git status',
+    'git add -A',
+    'git commit -m "fix: adjust parser"',
+    'git push',
+    'git push --force-with-lease origin main',
+    'git pull --rebase',
+    'git log --oneline -20',
+    'git diff HEAD~1',
+    'git checkout -b feature/new-thing',
+    'git stash',
+    'npm install',
+    'npm run build',
+    'bun install',
+    'pnpm install --frozen-lockfile',
+    'npx tsc --noEmit',
+    'cargo build --release',
+    'rg -n "TODO" src/',
+    'grep -rn "TODO" src',
+    'find . -name "*.ts" -type f',
+    'mkdir -p src/components',
+    'mv src/old-name.ts src/new-name.ts',
+    'cp -r templates/base src/generated',
+    'rm -rf node_modules',
+    'rm -rf dist',
+    'touch README.md',
+    'ls -la src',
+    'cat package.json',
+    'sed -n "1,40p" src/index.ts',
+  ];
 
   return [
     {
@@ -87,6 +120,18 @@ export function behavioralContractCases(paths: {
         intent: 'use_alternative',
         reasonIncludes: 'destroys all uncommitted changes',
         segment: 'git reset --hard',
+      },
+    },
+    {
+      name: 'blocks forced Git removal seen in a field incident',
+      command: 'git checkout --orphan test-connection && git rm -rf . --quiet',
+      options: options({ cwd: paths.cwd }),
+      expected: {
+        kind: 'block',
+        ruleId: 'git.rm-force',
+        intent: 'use_alternative',
+        reasonIncludes: 'removes tracked files from the working tree',
+        segment: 'git rm -rf . --quiet',
       },
     },
     {
@@ -580,5 +625,19 @@ export function behavioralContractCases(paths: {
       options: options({ cwd: paths.cwd, policy: invalidConfig }),
       expected: { kind: 'allow' },
     },
+    ...everydayCommands.flatMap((command): BehavioralContractCase[] => [
+      {
+        name: `allows an everyday command at standard safety: ${command}`,
+        command,
+        options: options({ cwd: paths.cwd }),
+        expected: { kind: 'allow' },
+      },
+      {
+        name: `allows an everyday command at strict safety: ${command}`,
+        command,
+        options: options({ cwd: paths.cwd, strict: true }),
+        expected: { kind: 'allow' },
+      },
+    ]),
   ];
 }

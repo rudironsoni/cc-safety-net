@@ -115,8 +115,7 @@ describe('integration metadata', () => {
     ).toEqual({
       id: 'copilot-cli',
       flag: '--copilot-cli',
-      installLabel: 'GitHub Copilot CLI',
-      helpTarget: 'GitHub Copilot CLI plugin',
+      artifactKind: 'plugin',
       probeCommand: ['copilot', '--binary-version'],
     });
     expect(getIntegrationDisplayName('copilot-cli')).toBe('GitHub Copilot CLI');
@@ -128,16 +127,14 @@ describe('integration metadata', () => {
     ).toEqual({
       id: 'hermes-agent',
       flag: '--hermes-agent',
-      installLabel: 'Hermes Agent',
-      helpTarget: 'Hermes Agent plugin',
+      artifactKind: 'plugin',
       probeCommand: ['hermes', '--version'],
     });
     expect(installIntegrationMetadata.find((integration) => integration.id === 'openclaw')).toEqual(
       {
         id: 'openclaw',
         flag: '--openclaw',
-        installLabel: 'OpenClaw',
-        helpTarget: 'OpenClaw plugin',
+        artifactKind: 'plugin',
         probeCommand: ['openclaw', '--version'],
       },
     );

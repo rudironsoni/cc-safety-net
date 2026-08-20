@@ -1,7 +1,7 @@
 /** Trace step for explain command - discriminated union of all step types. */
 export type TraceStep =
   | { type: 'parse'; input: string; segments: string[][] }
-  | { type: 'env-strip'; input: string[]; envVars: Record<string, '<redacted>'>; output: string[] }
+  | { type: 'env-strip'; input: string[]; envVars: string[]; output: string[] }
   | { type: 'leading-tokens-stripped'; input: string[]; removed: string[]; output: string[] }
   | { type: 'shell-wrapper'; wrapper: string; innerCommand: string }
   | { type: 'interpreter'; interpreter: string; codeArg: string; paranoidBlocked: boolean }
@@ -23,8 +23,7 @@ export type TraceStep =
     }
   | {
       type: 'rule-check';
-      ruleModule: string;
-      ruleFunction: string;
+      rule: string;
       matched: boolean;
       reason?: string;
     }

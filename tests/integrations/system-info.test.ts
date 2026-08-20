@@ -51,37 +51,37 @@ describe('getSystemInfo', () => {
 
   test('includes GitHub Copilot CLI version with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.copilotCliVersion).toBe('1.0.9');
+    expect(sysInfo.versions['copilot-cli']).toBe('1.0.9');
   });
 
   test('includes Antigravity CLI version with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.antigravityCliVersion).toBe('2.0.0');
+    expect(sysInfo.versions['antigravity-cli']).toBe('2.0.0');
   });
 
   test('probes the Hermes executable with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.hermesAgentVersion).toBe('1.5.0');
+    expect(sysInfo.versions['hermes-agent']).toBe('1.5.0');
   });
 
   test('probes the OpenClaw executable with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.openClawVersion).toBe('2026.8.1');
+    expect(sysInfo.versions.openclaw).toBe('2026.8.1');
   });
 
   test('includes Kimi Code version with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.kimiCodeVersion).toBe('0.3.0');
+    expect(sysInfo.versions['kimi-code']).toBe('0.3.0');
   });
 
   test('includes Pi CLI version with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.piCliVersion).toBe('0.4.0');
+    expect(sysInfo.versions.pi).toBe('0.4.0');
   });
 
   test('includes Codex CLI version with mock fetcher', async () => {
     const sysInfo = await getSystemInfo(mockVersionFetcher);
-    expect(sysInfo.codexCliVersion).toBe('1.2.0');
+    expect(sysInfo.versions.codex).toBe('1.2.0');
   });
 
   test('includes Codex plugin list output with mock fetcher', async () => {
@@ -91,13 +91,28 @@ describe('getSystemInfo', () => {
     );
   });
 
+  test('gives the Codex plugin probe the same generous timeout as the Amp one', async () => {
+    const calls: { argv: string; timeoutMs: number | undefined }[] = [];
+    await getSystemInfo(async (args, timeoutMs) => {
+      calls.push({ argv: args.join(' '), timeoutMs });
+      return null;
+    });
+
+    // A cold `codex plugin list` outlasts the default 5s probe timeout, which would silently
+    // report Codex as not installed in `doctor` while `install` still sees it.
+    expect({
+      amp: calls.find((call) => call.argv === 'amp plugins list')?.timeoutMs,
+      codex: calls.find((call) => call.argv === 'codex plugin list')?.timeoutMs,
+    }).toEqual({ amp: 30_000, codex: 30_000 });
+  });
+
   test('parses Kimi Code version output through existing parser', async () => {
     const sysInfo = await getSystemInfo(async (args) => {
       if (args[0] === 'kimi') return 'Kimi Code v1.2.3';
       return null;
     });
 
-    expect(sysInfo.kimiCodeVersion).toBe('1.2.3');
+    expect(sysInfo.versions['kimi-code']).toBe('1.2.3');
   });
 
   test('parses Antigravity CLI version output through existing parser', async () => {
@@ -106,7 +121,7 @@ describe('getSystemInfo', () => {
       return mockVersionFetcher(args);
     });
 
-    expect(sysInfo.antigravityCliVersion).toBe('2.1.3');
+    expect(sysInfo.versions['antigravity-cli']).toBe('2.1.3');
   });
 
   test('parses Codex CLI version output through existing parser', async () => {
@@ -115,7 +130,7 @@ describe('getSystemInfo', () => {
       return null;
     });
 
-    expect(sysInfo.codexCliVersion).toBe('1.2.3');
+    expect(sysInfo.versions.codex).toBe('1.2.3');
   });
 
   test('never starts copilot --version when --binary-version answers', async () => {
@@ -126,7 +141,7 @@ describe('getSystemInfo', () => {
     probes.binaryVersion.resolve('Copilot binary version: 1.0.9');
     const sysInfo = await sysInfoPromise;
 
-    expect(sysInfo.copilotCliVersion).toBe('1.0.9');
+    expect(sysInfo.versions['copilot-cli']).toBe('1.0.9');
     // The fallback downloads a ~160 MB package cache, so it must never be spawned in vain.
     expect(probes.calls.map((args) => args.join(' '))).not.toContain('copilot --version');
   });
@@ -142,19 +157,19 @@ describe('getSystemInfo', () => {
 
     const sysInfo = await getSystemInfo(fetcher);
 
-    expect(sysInfo.copilotCliVersion).toBeNull();
+    expect(sysInfo.versions['copilot-cli']).toBeNull();
     expect(calls.map((args) => args.join(' '))).not.toContain('copilot --version');
   });
 
   test('handles commands that exit with non-zero code', async () => {
     const failingFetcher = async (_args: string[]) => null;
     const result = await getSystemInfo(failingFetcher);
-    expect(result.claudeCodeVersion).toBeNull();
-    expect(result.copilotCliVersion).toBeNull();
-    expect(result.codexCliVersion).toBeNull();
+    expect(result.versions['claude-code']).toBeNull();
+    expect(result.versions['copilot-cli']).toBeNull();
+    expect(result.versions.codex).toBeNull();
     expect(result.codexPluginListOutput).toBeNull();
-    expect(result.kimiCodeVersion).toBeNull();
-    expect(result.piCliVersion).toBeNull();
+    expect(result.versions['kimi-code']).toBeNull();
+    expect(result.versions.pi).toBeNull();
     expect(result.bunVersion).toBeNull();
     expect(result.nodeVersion).toBeNull();
   });
@@ -175,15 +190,15 @@ describe('getSystemInfo', () => {
     // probe has answered.
     expect(argv).toContain('copilot --binary-version');
     expect(argv).not.toContain('copilot --version');
-    expect(sysInfo.copilotCliVersion).not.toBeNull();
+    expect(sysInfo.versions['copilot-cli']).not.toBeNull();
   });
 
   test('handles empty version output', async () => {
     const emptyFetcher = async (_args: string[]) => '';
     const result = await getSystemInfo(emptyFetcher);
-    expect(result.claudeCodeVersion).toBeNull();
-    expect(result.copilotCliVersion).toBeNull();
-    expect(result.codexCliVersion).toBeNull();
+    expect(result.versions['claude-code']).toBeNull();
+    expect(result.versions['copilot-cli']).toBeNull();
+    expect(result.versions.codex).toBeNull();
     expect(result.bunVersion).toBeNull();
   });
 });

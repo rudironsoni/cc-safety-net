@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { delimiter, extname, join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 
+import { installIntegrationMetadata } from '@/integrations/catalog';
 import type { SystemInfo } from '@/integrations/doctor-types';
 
 declare const __PKG_VERSION__: string | undefined;
@@ -200,61 +201,29 @@ export async function getSystemInfo(
   fetcher: VersionFetcher = defaultVersionFetcher,
 ): Promise<SystemInfo> {
   // Run all version fetches in parallel
-  const [
-    claudeRaw,
-    antigravityRaw,
-    openCodeRaw,
-    codexRaw,
-    codexPluginListOutput,
-    geminiRaw,
-    copilotRaw,
-    hermesRaw,
-    kimiRaw,
-    openClawRaw,
-    piRaw,
-    cursorRaw,
-    ampRaw,
-    ampPluginListOutput,
-    nodeRaw,
-    npmRaw,
-    bunRaw,
-  ] = await Promise.all([
-    fetcher(['claude', '--version']),
-    fetcher(['agy', '--version']),
-    fetcher(['opencode', '--version']),
-    fetcher(['codex', '--version']),
-    fetcher(['codex', 'plugin', 'list']),
-    fetcher(['gemini', '--version']),
-    fetcher(['copilot', '--binary-version']),
-    fetcher(['hermes', '--version']),
-    fetcher(['kimi', '--version']),
-    fetcher(['openclaw', '--version']),
-    fetcher(['pi', '--version']),
-    fetcher(['cursor', '--version']),
-    fetcher(['amp', '--version']),
-    // A cold `amp plugins list` starts the plugin service and fetches the hosted personal
-    // plugins, which outlasts the default version timeout the same way Codex's does.
-    fetcher(['amp', 'plugins', 'list'], 30_000),
-    fetcher(['node', '--version']),
-    fetcher(['npm', '--version']),
-    fetcher(['bun', '--version']),
-  ]);
+  const [versionEntries, codexPluginListOutput, ampPluginListOutput, nodeRaw, npmRaw, bunRaw] =
+    await Promise.all([
+      Promise.all(
+        installIntegrationMetadata.map(
+          async (integration) =>
+            [integration.id, parseVersion(await fetcher([...integration.probeCommand]))] as const,
+        ),
+      ),
+      // A cold `codex plugin list` refreshes marketplace checkouts over the network and can
+      // outlast the default 5s version timeout, which would silently drop Codex from detection.
+      fetcher(['codex', 'plugin', 'list'], 30_000),
+      // A cold `amp plugins list` starts the plugin service and fetches the hosted personal
+      // plugins, which outlasts the default version timeout the same way Codex's does.
+      fetcher(['amp', 'plugins', 'list'], 30_000),
+      fetcher(['node', '--version']),
+      fetcher(['npm', '--version']),
+      fetcher(['bun', '--version']),
+    ]);
 
   return {
     version: CURRENT_VERSION,
-    claudeCodeVersion: parseVersion(claudeRaw),
-    antigravityCliVersion: parseVersion(antigravityRaw),
-    openCodeVersion: parseVersion(openCodeRaw),
-    codexCliVersion: parseVersion(codexRaw),
+    versions: Object.fromEntries(versionEntries),
     codexPluginListOutput,
-    geminiCliVersion: parseVersion(geminiRaw),
-    copilotCliVersion: parseVersion(copilotRaw),
-    hermesAgentVersion: parseVersion(hermesRaw),
-    kimiCodeVersion: parseVersion(kimiRaw),
-    openClawVersion: parseVersion(openClawRaw),
-    piCliVersion: parseVersion(piRaw),
-    cursorVersion: parseVersion(cursorRaw),
-    ampVersion: parseVersion(ampRaw),
     ampPluginListOutput,
     nodeVersion: parseVersion(nodeRaw),
     npmVersion: parseVersion(npmRaw),

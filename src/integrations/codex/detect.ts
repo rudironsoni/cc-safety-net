@@ -23,6 +23,14 @@ export function detect(context: DetectContext): HookDetection {
     return { platform: 'codex', status: 'n/a' };
   }
 
+  // `codex plugin list` prints every marketplace row as "installed, enabled",
+  // "installed, disabled", or "not installed". "installed," matches either installed
+  // state and can never match "not installed", so a registered-but-never-installed
+  // row reports absent instead of disabled.
+  if (!pluginLine.includes('installed,')) {
+    return { platform: 'codex', status: 'n/a' };
+  }
+
   if (!pluginLine.includes('installed, enabled')) {
     return {
       platform: 'codex',

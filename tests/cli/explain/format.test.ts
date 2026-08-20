@@ -99,7 +99,7 @@ describe('formatTraceHuman', () => {
   test('shows rule module and function annotation', () => {
     const result = explainCommand('git reset --hard');
     const output = formatTraceHuman(result);
-    expect(output).toContain('git:analyzeGit()');
+    expect(output).toContain('git:analyzeGitMatch()');
   });
 
   test('includes CONFIG section with Path', () => {

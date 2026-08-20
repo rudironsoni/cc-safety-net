@@ -1,4 +1,4 @@
-import { installIntegrationMetadata } from '@/integrations/catalog';
+import { getIntegrationDisplayName, installIntegrationMetadata } from '@/integrations/catalog';
 import type { Command } from './types';
 
 export const installCommand = {
@@ -8,7 +8,7 @@ export const installCommand = {
   options: [
     ...installIntegrationMetadata.map((integration) => ({
       flags: integration.flag,
-      description: `Install ${integration.helpTarget}`,
+      description: `Install ${getIntegrationDisplayName(integration.id)} ${integration.artifactKind}`,
     })),
     { flags: '-h, --help', description: 'Show this help' },
   ],
@@ -25,7 +25,7 @@ export const uninstallCommand = {
   options: [
     ...installIntegrationMetadata.map((integration) => ({
       flags: integration.flag,
-      description: `Uninstall ${integration.helpTarget}`,
+      description: `Uninstall ${getIntegrationDisplayName(integration.id)} ${integration.artifactKind}`,
     })),
     { flags: '-h, --help', description: 'Show this help' },
   ],

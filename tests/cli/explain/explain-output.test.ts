@@ -72,8 +72,7 @@ describe('explain output', () => {
               steps: [
                 {
                   type: 'rule-check',
-                  ruleModule: 'policy-protection',
-                  ruleFunction: 'findPolicyConfigMutationTarget',
+                  rule: 'policy-protection:findPolicyConfigMutationTargetInSemanticFacts',
                   matched: true,
                   reason: REASON_POLICY_CONFIG_PROTECTION,
                 },
@@ -101,7 +100,7 @@ describe('explain output', () => {
         'git reset --hard',
         ['git', 'reset', '--hard'],
         [
-          { type: 'rule-check', ruleModule: 'git', ruleFunction: 'analyzeGit', matched: false },
+          { type: 'rule-check', rule: 'git:analyzeGitMatch', matched: false },
           { type: 'fallback-scan', tokensScanned: [] },
           { type: 'custom-rules-check', rulesChecked: false, matched: false },
         ],
@@ -117,8 +116,7 @@ describe('explain output', () => {
         [
           {
             type: 'rule-check',
-            ruleModule: 'analyze/find.ts',
-            ruleFunction: 'analyzeFind',
+            rule: 'analyzer/find.ts:analyzeFindMatch',
             matched: false,
           },
           { type: 'fallback-scan', tokensScanned: [] },
@@ -154,7 +152,7 @@ describe('explain output', () => {
             innerCommand: 'git reset --hard',
             depth: 1,
           },
-          { type: 'rule-check', ruleModule: 'git', ruleFunction: 'analyzeGit', matched: false },
+          { type: 'rule-check', rule: 'git:analyzeGitMatch', matched: false },
           { type: 'fallback-scan', tokensScanned: [] },
           { type: 'custom-rules-check', rulesChecked: false, matched: false },
         ],
@@ -244,15 +242,13 @@ describe('explain output', () => {
           [
             {
               type: 'rule-check',
-              ruleModule: 'git',
-              ruleFunction: 'analyzeGit',
+              rule: 'git:analyzeGitMatch',
               matched: true,
               reason: GIT_REASON,
             },
             {
               type: 'rule-check',
-              ruleModule: 'awk',
-              ruleFunction: 'analyzeAwkSystemCalls',
+              rule: 'awk:analyzeAwkSystemCallMatch',
               matched: true,
               reason: GIT_REASON,
             },
@@ -264,7 +260,7 @@ describe('explain output', () => {
           `awk 'BEGIN { system("git reset --hard") }'`,
           ['awk', 'BEGIN { system("git reset --hard") }'],
           [
-            { type: 'rule-check', ruleModule: 'git', ruleFunction: 'analyzeGit', matched: false },
+            { type: 'rule-check', rule: 'git:analyzeGitMatch', matched: false },
             { type: 'fallback-scan', tokensScanned: [] },
             { type: 'custom-rules-check', rulesChecked: false, matched: false },
             { type: 'fallback-scan', tokensScanned: [] },
@@ -281,8 +277,7 @@ describe('explain output', () => {
           [
             {
               type: 'rule-check',
-              ruleModule: 'awk',
-              ruleFunction: 'analyzeAwkSystemCalls',
+              rule: 'awk:analyzeAwkSystemCallMatch',
               matched: true,
               reason: awkDynamicReason,
             },
@@ -453,8 +448,7 @@ describe('explain output', () => {
         [
           {
             type: 'rule-check',
-            ruleModule: 'analyze/powershell/remove-item.ts',
-            ruleFunction: 'analyzePowerShellCommandViewMatch',
+            rule: 'analyzer/powershell/remove-item.ts:analyzePowerShellCommandViewMatch',
             matched: true,
             reason,
           },
@@ -497,8 +491,7 @@ describe('explain output', () => {
         expect(explained.reason).toBe(RM_REASON);
         expect(getTraceSteps(explained).at(-1)).toEqual({
           type: 'rule-check',
-          ruleModule: 'analyze/rm.ts',
-          ruleFunction: 'analyzeRm',
+          rule: 'analyzer/rm.ts:analyzeRmMatch',
           matched: true,
           reason: RM_REASON,
         });

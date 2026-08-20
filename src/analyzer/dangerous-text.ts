@@ -3,11 +3,6 @@ import { chargeNativeLinearPass, chargeScan } from '@/analyzer/text-scanner';
 import type { DestructiveCommandRuleMatch } from '@/ir/analysis';
 import { destructiveCommandMatch } from '@/rules/destructive-command-rules';
 
-/** @internal */
-export function dangerousInText(text: string, scanWork?: { units: number }): string | null {
-  return dangerousInTextMatch(text, scanWork)?.reason ?? null;
-}
-
 export function dangerousInTextMatch(
   text: string,
   scanWork?: { units: number },

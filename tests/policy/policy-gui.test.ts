@@ -195,6 +195,7 @@ describe('policy GUI helpers', () => {
             'secret.unknown': 'off',
           },
           deny_paths: ['private/token.txt', '', 42, '~', '/'],
+          allow_paths: ['**/.env.test', '~/projects/fixtures', '', 42, '~', '**'],
         },
         extra: true,
       }),
@@ -225,6 +226,8 @@ describe('policy GUI helpers', () => {
         enabled: false,
         overrides: { 'secret.ext.pem': 'off' },
         deny_paths: ['private/token.txt'],
+        // The glob entry is repaired away: allow paths are literal only.
+        allow_paths: ['~/projects/fixtures'],
       },
       // The fixture carries no audit section, so repair supplies the default.
       audit: { retention_days: 30 },
@@ -280,7 +283,7 @@ describe('policy GUI helpers', () => {
     }
     expect(
       DESTRUCTIVE_COMMAND_RULE_METADATA.filter((entry) => !entry.activationCapability),
-    ).toHaveLength(54);
+    ).toHaveLength(55);
     expect(
       DESTRUCTIVE_COMMAND_RULE_METADATA.filter(
         (entry) => entry.activationCapability === 'fail_closed',

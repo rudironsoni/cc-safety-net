@@ -1,5 +1,6 @@
 import { analysisWordText, isLiteralExecutionSourceWord } from '@/analyzer/command-words';
 import { parseShellArgv } from '@/analyzer/shell-wrappers';
+import { isStandardCommandWrapper } from '@/analyzer/transparent-wrappers';
 import { parseEnvAssignment } from '@/analyzer/wrapper-prelude';
 import type { CommandProgram, CommandRedirection, CommandView, CommandWord } from '@/ir/command';
 import { DEFAULT_COMMAND_PARSER_LIMITS, parseCommand } from '@/parser/command';
@@ -165,6 +166,81 @@ export function extractShellScriptOperandSource(
   const word = words[scriptIndex];
   const source = wordText(word);
   return isLiteralExecutionSourceWord(word, source) ? { kind: 'literal', source } : DYNAMIC_SOURCE;
+}
+
+const REMOTE_FETCHERS = new Set([
+  'curl',
+  'wget',
+  'fetch',
+  'aria2c',
+  'http',
+  'https',
+  'xh',
+  'xhs',
+  'nc',
+  'ncat',
+  'netcat',
+]);
+
+/**
+ * Whether the command is `eval "$(CMD)"` or `source`/`.` `<(CMD)` where CMD is a single
+ * fully literal local command: no dynamic word, no compound body, no remote fetcher,
+ * and no shell or wrapper head that could forward to one.
+ */
+export function isVerifiableLocalGeneratorSource(command: CommandView): boolean {
+  if (
+    command.words.length !== 2 ||
+    command.redirections.length !== 0 ||
+    command.nested.length !== 1
+  ) {
+    return false;
+  }
+
+  const head = command.words[0];
+  const operand = command.words[1];
+  if (!head || head.provenance !== 'literal' || head.quoted || head.raw !== head.text || !operand) {
+    return false;
+  }
+
+  const hasExactOuterForm =
+    (head.text === 'eval' &&
+      operand.quoted &&
+      operand.parts.length === 3 &&
+      operand.parts[0]?.raw === '"' &&
+      operand.parts[1]?.provenance === 'command-substitution' &&
+      operand.parts[1].raw.startsWith('$(') &&
+      operand.parts[2]?.raw === '"') ||
+    ((head.text === 'source' || head.text === '.') &&
+      !operand.quoted &&
+      operand.parts.length === 1 &&
+      operand.parts[0]?.provenance === 'command-substitution' &&
+      operand.parts[0].raw.startsWith('<('));
+  if (!hasExactOuterForm) return false;
+
+  const program = command.nested[0];
+  if (program?.status !== 'complete' || program.nodes.length !== 1) return false;
+  const inner = program.nodes[0];
+  if (
+    inner?.kind !== 'command' ||
+    inner.redirections.length !== 0 ||
+    inner.nested.length !== 0 ||
+    inner.words.some(
+      (word) =>
+        word.provenance !== 'literal' || word.parts.some((part) => part.provenance !== 'literal'),
+    )
+  ) {
+    return false;
+  }
+
+  const innerHead = inner.words[0]?.text;
+  if (innerHead === undefined || parseEnvAssignment(innerHead) !== null) return false;
+
+  const basename = getBasename(normalizeCommandToken(innerHead));
+  return (
+    !REMOTE_FETCHERS.has(basename) &&
+    !SHELL_WRAPPERS.has(basename) &&
+    !isStandardCommandWrapper(basename)
+  );
 }
 
 function findShellScriptIndex(words: readonly CommandWord[]): number {

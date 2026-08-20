@@ -248,6 +248,29 @@ describe('policy snapshots', () => {
     });
   });
 
+  test('salvages a deny path list by dropping only the home-covering entry', async () => {
+    await withTempDir('cc-safety-net-snapshot-deny-path-salvage-', (cwd) => {
+      const userConfigDir = join(cwd, 'user', 'rules');
+      mkdirSync(dirname(userConfigDir), { recursive: true });
+      writeFileSync(
+        join(dirname(userConfigDir), 'policy.json'),
+        '{"version":1,"secret_protection":{"deny_paths":["private/token.txt","~"]}}',
+      );
+
+      const snapshot = loadPolicySnapshot({ cwd, userConfigDir });
+
+      expect(snapshot.state).toBe('degraded');
+      if (snapshot.state !== 'degraded') return;
+      // The usable entry survives the repair, the entry that would block every
+      // command is dropped, and protection stays on.
+      expect(snapshot.policy.secretProtection.denyPaths).toEqual(['private/token.txt']);
+      expect(snapshot.policy.secretProtection.enabled).toBeTrue();
+      expect(snapshot.reason).toContain(
+        'secret_protection.deny_paths[1] cannot be the home directory or a path above it',
+      );
+    });
+  });
+
   test('keeps verified rules from a healthy scope when another scope is dropped', async () => {
     await withTempDir('cc-safety-net-snapshot-containment-', async (cwd) => {
       const userConfigDir = join(cwd, 'user', 'rules');

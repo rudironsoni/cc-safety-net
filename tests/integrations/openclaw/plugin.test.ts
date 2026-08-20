@@ -99,6 +99,21 @@ describe('OpenClaw before_tool_call plugin', () => {
     });
   });
 
+  test('makes no decision for Code Mode exec events tagged with toolKind', () => {
+    withWorkspace((dir) => {
+      expect(
+        createOpenClawBeforeToolCallHandler(openClawApi(dir))(
+          {
+            toolName: 'exec',
+            params: { code: 'rm -rf .', command: 'rm -rf .' },
+            toolKind: 'code_mode_exec',
+          },
+          toolContext(),
+        ),
+      ).toBeUndefined();
+    });
+  });
+
   test('blocks malformed exec events', () => {
     withWorkspace((dir) => {
       const handler = createOpenClawBeforeToolCallHandler(openClawApi(dir));

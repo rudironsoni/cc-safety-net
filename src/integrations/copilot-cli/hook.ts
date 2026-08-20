@@ -24,6 +24,8 @@ interface CopilotCliHookOutput {
 const COPILOT_CLI_COMMAND_TOOLS = new Map<string, CommandToolKind>([
   ['bash', 'auto'],
   ['Bash', 'auto'],
+  ['powershell', 'powershell'],
+  ['PowerShell', 'powershell'],
 ]);
 
 /** @internal */

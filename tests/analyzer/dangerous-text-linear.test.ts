@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { dangerousInText } from '@/analyzer/dangerous-text';
+import { dangerousInTextMatch } from '@/analyzer/dangerous-text';
 import { containsDangerousCode } from '@/analyzer/interpreters';
+
+const dangerousInText = (text: string) => dangerousInTextMatch(text)?.reason ?? null;
 
 function expectLabel(text: string, label: string): void {
   expect(dangerousInText(text)).toContain(`(${label})`);

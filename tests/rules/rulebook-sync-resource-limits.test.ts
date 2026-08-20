@@ -114,7 +114,7 @@ describe('rulebook sync source fanout limits', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'rule-sync-source-limit-'));
     try {
       const names = Array.from(
-        { length: 65 },
+        { length: 64 },
         (_, index) => `rules-${String(index).padStart(2, '0')}`,
       );
       for (const name of names) {
@@ -378,17 +378,13 @@ describe('GitHub repository discovery source boundaries', () => {
   });
 
   test('deduplicates repository tree entries before enforcing the source boundary', async () => {
-    const names = Array.from(
-      { length: 64 },
-      (_, index) => `rules-${String(index).padStart(2, '0')}`,
-    );
-    await withGitHubRulebooks(
-      'deduplicate',
-      [...names, names[0] as string],
-      async (cwd, requests, operation) => {
-        await expectSuccessfulRepositoryAdd(cwd, requests, names, operation());
-      },
-    );
+    const names = Array.from({ length: 65 }, () => 'rules-00');
+    await withGitHubRulebooks('deduplicate', names, async (cwd, requests, operation) => {
+      const result = await addRulebookSourceWithOperation('owner/repo', { cwd }, operation());
+      expect(result.ok).toBe(true);
+      expect(result.entries.map((entry) => entry.name)).toEqual(['rules-00']);
+      expect(requests).toHaveLength(5);
+    });
   });
 
   test('preserves request counts for pinned, restored, refreshed, partial, and check paths', async () => {

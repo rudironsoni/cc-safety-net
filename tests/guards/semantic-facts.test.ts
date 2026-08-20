@@ -357,7 +357,7 @@ describe('semantic facts', () => {
     ).toEqual(['git reset --hard', 'echo ', 'rm -rf /']);
   });
 
-  test('freezes the complete fact graph and records bounded parser uncertainty', () => {
+  test('records bounded parser uncertainty', () => {
     const facts = createSemanticFacts({
       toolName: 'bash',
       input: { command: `echo ${'x'.repeat(131_100)}` },
@@ -366,9 +366,6 @@ describe('semantic facts', () => {
       context: { configCwd: '/project', executionCwd: '/project' },
     });
 
-    expect(Object.isFrozen(facts)).toBeTrue();
-    expect(Object.isFrozen(facts.commands)).toBeTrue();
-    expect(Object.isFrozen(facts.commands[0]?.views)).toBeTrue();
     expect(facts.commands[0]?.uncertainties.map((issue) => issue.code)).toContain('input-limit');
   });
 
@@ -383,9 +380,7 @@ describe('semantic facts', () => {
     });
 
     expect(facts.commands).toEqual([]);
-    expect(facts.paths).toEqual([
-      expect.objectContaining({ raw: 'README.md', role: 'patch-target', access: 'write' }),
-    ]);
+    expect(facts.paths).toEqual(['README.md']);
   });
 
   test('classifies file and here-data redirections without losing legacy ordering', () => {

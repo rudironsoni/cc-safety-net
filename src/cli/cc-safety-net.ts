@@ -3,12 +3,7 @@ import { parseCommandArgs, reportCommandArgErrors } from '@/cli/args';
 import { runLogsCommand } from '@/cli/audit-log';
 import { type CommandName, findCommand } from '@/cli/commands';
 import { parseDoctorFlags, runDoctor } from '@/cli/doctor/index';
-import {
-  explainCommand,
-  formatTraceHuman,
-  formatTraceJson,
-  parseExplainFlags,
-} from '@/cli/explain/index';
+import { runExplain } from '@/cli/explain/run';
 import { printHelp, printVersion, showCommandHelp } from '@/cli/help';
 import {
   findHookIntegrationByFlag,
@@ -106,20 +101,7 @@ const commandHandlers = {
     process.exit(await runGuiCommand(args));
   },
   explain: async (args) => {
-    const flags = parseExplainFlags(args);
-    if (!flags) {
-      process.exit(1);
-    }
-
-    const result = explainCommand(flags.command, { cwd: flags.cwd });
-    const asciiOnly = !!process.env.NO_COLOR || !process.stdout.isTTY;
-
-    if (flags.json) {
-      console.log(formatTraceJson(result));
-    } else {
-      console.log(formatTraceHuman(result, { asciiOnly }));
-    }
-    process.exit(0);
+    process.exit(await runExplain(args));
   },
 } satisfies Record<CommandName, (args: string[]) => Promise<void>>;
 

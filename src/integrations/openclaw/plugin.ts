@@ -19,8 +19,11 @@ import { ENV_FLAGS, envTruthy, shouldRecordAllowedCommands } from '@/policy/env'
 const OPENCLAW_EXEC_TOOL = 'exec';
 
 /**
- * `exec.host` values whose execution filesystem is the local Gateway host, the only host whose
- * paths the agent workspace describes. `sandbox`, `node`, and unknown values run somewhere else.
+ * `exec.host` values analyzed against the local Gateway host, the only host whose paths the agent
+ * workspace describes. `gateway` is proven local; `auto` is accepted because an absent host is the
+ * default shape on an install without a sandbox, though a sandbox-configured host resolves `auto`
+ * to the sandbox instead (residual documented in SECURITY.md). `sandbox`, `node`, and unknown
+ * values run somewhere else.
  */
 const PROVEN_EXEC_HOSTS = new Set(['auto', 'gateway']);
 
@@ -35,6 +38,7 @@ type OpenClawToolContext = {
 type OpenClawBeforeToolCallEvent = {
   toolName?: unknown;
   params?: unknown;
+  toolKind?: unknown;
 };
 
 /** OpenClaw treats a missing result as "no decision" and never rewrites params on our behalf. */
@@ -123,6 +127,10 @@ function getOpenClawToolCall(
   }
   // Only `exec` has a proven parameter and execution-directory mapping.
   if (toolName !== OPENCLAW_EXEC_TOOL) return undefined;
+  // OpenClaw stamps `toolKind` on tools that intentionally share a name — Code Mode's JavaScript
+  // `exec` mirrors its code into `command` — and omits it entirely on the plain shell tool. Only
+  // the untagged tool has a proven parameter mapping, so a tagged event gets no decision.
+  if ((event as OpenClawBeforeToolCallEvent).toolKind !== undefined) return undefined;
 
   const params = (event as OpenClawBeforeToolCallEvent).params;
   if (!params || typeof params !== 'object' || Array.isArray(params)) {

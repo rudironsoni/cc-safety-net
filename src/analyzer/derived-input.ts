@@ -6,12 +6,14 @@ import {
 } from '@/analyzer/command-words';
 import { getFindPrimaryArity, isFindExecPrimary } from '@/analyzer/find';
 import { analyzeGitMatch } from '@/analyzer/git';
+import { GIT_RULE_SUBCOMMANDS } from '@/analyzer/git/rules';
 import { GIT_GLOBAL_OPTS_WITH_VALUE } from '@/analyzer/git/worktree';
 import {
   extractParallelChildStart,
   REASON_PARALLEL_RM,
   REASON_PARALLEL_SHELL,
 } from '@/analyzer/parallel';
+import { hasRecursiveForceFlags } from '@/analyzer/rm-flags';
 import { stripWrapperWords } from '@/analyzer/wrapper-prelude';
 import {
   extractXargsChildCommandWithInfo,
@@ -32,22 +34,6 @@ const REASON_DYNAMIC_EXECUTABLE =
   'dynamic command name contains shell substitution output and cannot be verified safely. Use a literal executable name.';
 const REASON_DYNAMIC_STRUCTURE =
   'shell substitution output can change guarded command structure and cannot be verified safely. Use literal subcommands and options.';
-const STRUCTURAL_GIT_SUBCOMMANDS = new Set([
-  'branch',
-  'checkout',
-  'clean',
-  'merge',
-  'push',
-  'rebase',
-  'reflog',
-  'reset',
-  'restore',
-  'stash',
-  'switch',
-  'tag',
-  'worktree',
-]);
-
 /** Whether any part of the word is substitution output, so its text is unknown. */
 function hasCommandSubstitutionPart(word: CommandWord | undefined): boolean {
   return word?.parts.some((part) => part.provenance === 'command-substitution') ?? false;
@@ -66,12 +52,17 @@ export function analyzeDynamicCommandStructure(
   dialect: CommandView['dialect'],
   words: readonly CommandWord[],
   environment: EnvironmentContext,
+  topLevel: boolean,
   strict = false,
   policy?: EffectivePolicy,
 ): DestructiveCommandRuleMatch | null {
+  // A variable executable name is only judged here for the command as written: derived
+  // commands reach this path as reconstructed words their own carriers already fail closed on.
+  const dynamicHead =
+    isDynamicExecutable(dialect, words) ||
+    (topLevel && dialect !== 'powershell' && words[0]?.provenance === 'variable');
   const dynamicExecutableMatch =
-    isDynamicExecutable(dialect, words) &&
-    destructiveCommandRuleIsEnabled(policy, 'shell.dynamic-executable', strict)
+    dynamicHead && destructiveCommandRuleIsEnabled(policy, 'shell.dynamic-executable', strict)
       ? destructiveCommandMatch('shell.dynamic-executable', REASON_DYNAMIC_EXECUTABLE)
       : null;
   return (
@@ -115,7 +106,7 @@ function analyzeDynamicStructure(
     if (
       destructiveCommandRuleIsEnabled(policy, 'shell.dynamic-structure', strict) &&
       subcommand &&
-      STRUCTURAL_GIT_SUBCOMMANDS.has(subcommand) &&
+      GIT_RULE_SUBCOMMANDS.has(subcommand) &&
       dynamicIndexes.some(
         (index) => index > subcommandIndex && (dataBoundary === -1 || index < dataBoundary),
       )
@@ -131,6 +122,27 @@ function analyzeDynamicStructure(
   if (head === 'find') {
     return destructiveCommandRuleIsEnabled(policy, 'shell.dynamic-structure', strict) &&
       hasDynamicFindStructure(words)
+      ? filterDestructiveCommandMatch(
+          destructiveCommandMatch('shell.dynamic-structure', REASON_DYNAMIC_STRUCTURE),
+          policy,
+        )
+      : null;
+  }
+
+  if (head === 'rm') {
+    const dataBoundary = words.findIndex(
+      (word, index) => index > 0 && analysisWordText(word) === '--',
+    );
+    // A trailing substitution is left to the rm rules only when literal recursive+force flags
+    // make rm.recursive-force-dynamic-target judge it; any other substitution output before a
+    // literal `--` can inject options.
+    const trailingJudgedByRmRules = hasRecursiveForceFlags(words.map(analysisWordText));
+    return destructiveCommandRuleIsEnabled(policy, 'shell.dynamic-structure', strict) &&
+      dynamicIndexes.some(
+        (index) =>
+          (dataBoundary === -1 || index < dataBoundary) &&
+          (index < words.length - 1 || !trailingJudgedByRmRules),
+      )
       ? filterDestructiveCommandMatch(
           destructiveCommandMatch('shell.dynamic-structure', REASON_DYNAMIC_STRUCTURE),
           policy,

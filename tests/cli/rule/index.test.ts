@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runRuleCommand } from '@/cli/rule';
 import * as systemInfo from '@/integrations/system-info';
-import { runCCSafetyNetCli, withEnv, withTempDir } from '../../helpers';
+import { captureConsoleOutput, runCCSafetyNetCli, withEnv, withTempDir } from '../../helpers';
 import { writeProjectRuleConfig } from '../../helpers/rulebook';
 
 describe('rule list exit code', () => {
@@ -125,18 +125,11 @@ describe('rule leaf help', () => {
 });
 
 async function captureRuleCommand(args: string[]) {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const log = spyOn(console, 'log').mockImplementation((...parts: unknown[]) =>
-    stdout.push(parts.map(String).join(' ')),
-  );
-  const error = spyOn(console, 'error').mockImplementation((...parts: unknown[]) =>
-    stderr.push(parts.map(String).join(' ')),
-  );
-  const exitCode = await runRuleCommand(args).finally(() => {
-    log.mockRestore();
-    error.mockRestore();
-  });
+  const {
+    result: exitCode,
+    stdout,
+    stderr,
+  } = await captureConsoleOutput(() => runRuleCommand(args));
   return {
     exitCode,
     output: [...stdout, ...stderr].join('\n'),

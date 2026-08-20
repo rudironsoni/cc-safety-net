@@ -8,9 +8,15 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { runRuleCommand } from '@/cli/rule';
 import { RULE_DOC } from '@/cli/rule/doc';
 import { runRulesVerify } from '@/cli/rule/verify';
-import { runCCSafetyNetCli, withTempDir } from '../helpers';
+import {
+  captureConsoleOutput,
+  runCCSafetyNetCli as runSourceCli,
+  withEnv,
+  withTempDir,
+} from '../helpers';
 import { writeLocalRulebook, writeProjectRuleConfig } from '../helpers/rulebook';
 
 describe('rule command docs', () => {
@@ -30,7 +36,7 @@ describe('rule command docs', () => {
   });
 
   test('prints rule docs', async () => {
-    const result = await runCCSafetyNetCli(['rule', 'doc']);
+    const result = await runSourceCli(['rule', 'doc']);
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe('');
@@ -39,7 +45,7 @@ describe('rule command docs', () => {
 
   test('prints help error on stderr when rule subcommand is missing', async () => {
     for (const args of [['rule'], ['rule', '--check']]) {
-      const result = await runCCSafetyNetCli(args);
+      const result = await runSourceCli(args);
 
       expect(result.exitCode).toBe(1);
       expect(result.output).toBe('');
@@ -49,7 +55,7 @@ describe('rule command docs', () => {
   });
 
   test('prints successful help for rule help flag', async () => {
-    const result = await runCCSafetyNetCli(['rule', '--help']);
+    const result = await runSourceCli(['rule', '--help']);
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe('');
@@ -83,7 +89,7 @@ describe('rule command docs', () => {
         ['rule', 'init'],
         ['rule', 'wrapper', 'add', 'rtk'],
       ]) {
-        const result = await runCCSafetyNetCli(args, { HOME: join(tempDir, 'home') }, tempDir);
+        const result = await runSourceCli(args, { HOME: join(tempDir, 'home') }, tempDir);
         expect(result.exitCode).toBe(1);
         expect(result.stderr).toContain('Unable to access project policy filesystem safely.');
         expect(result.stderr).not.toContain('TOPSECRET');
@@ -941,7 +947,35 @@ function runProjectRuleWrapper(dir: string, action: 'add' | 'remove') {
 }
 
 function runProjectRuleCli(args: string[], dir: string) {
-  return runCCSafetyNetCli(args, { HOME: join(dir, 'home') }, dir);
+  return runSourceCli(args, { HOME: join(dir, 'home') }, dir);
+}
+
+async function runCCSafetyNetCli(
+  args: string[],
+  env: Record<string, string | undefined> = {},
+  cwd = process.cwd(),
+) {
+  const originalCwd = process.cwd();
+  const {
+    result: exitCode,
+    stdout,
+    stderr,
+  } = await captureConsoleOutput(() =>
+    withEnv(env, async () => {
+      try {
+        process.chdir(cwd);
+        return await runRuleCommand(args.slice(1));
+      } finally {
+        process.chdir(originalCwd);
+      }
+    }),
+  );
+
+  return {
+    exitCode,
+    output: stdout.length > 0 ? `${stdout.join('\n')}\n` : '',
+    stderr: stderr.length > 0 ? `${stderr.join('\n')}\n` : '',
+  };
 }
 
 function writeLegacyConfig(path: string, name: string, command: string): void {

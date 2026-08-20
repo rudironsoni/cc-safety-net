@@ -98,6 +98,16 @@ describe('GitHub Copilot CLI hook', () => {
   });
 
   describe('invalid toolArgs', () => {
+    test('blocks non-string toolArgs before command analysis', async () => {
+      await expectDeny(
+        {
+          ...copilotBashInput('git status'),
+          toolArgs: { command: 'git status' },
+        },
+        'Failed to parse toolArgs JSON.',
+      );
+    });
+
     test('non-strict mode blocks invalid toolArgs JSON', async () => {
       await expectDeny(copilotRawToolArgsInput('{invalid'), 'Failed to parse toolArgs JSON.');
     });

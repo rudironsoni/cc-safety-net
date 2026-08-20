@@ -291,6 +291,38 @@ describe('PowerShell Remove-Item support', () => {
     });
   });
 
+  test('allows allow-path targets in strict and paranoid mode', () => {
+    withTempProject((cwd) => {
+      const allowConfig: Config = { ...config, destructiveCommandAllowPaths: ['/some/allowed'] };
+      expect(
+        analyzePowerShell('Remove-Item /some/allowed/dir -Recurse -Force', cwd, {
+          strict: true,
+          config: allowConfig,
+        }),
+      ).toBeNull();
+      expect(
+        analyzePowerShell('Remove-Item /some/allowed/dir -Recurse -Force', cwd, {
+          strict: true,
+          paranoidRm: true,
+          config: allowConfig,
+        }),
+      ).toBeNull();
+    });
+  });
+
+  test('blocks the remaining documented Remove-Item aliases', () => {
+    withTempProject((cwd) => {
+      for (const alias of ['del', 'erase', 'rd', 'rm', 'rmdir']) {
+        expect(analyzePowerShell(`${alias} . -Recurse -Force`, cwd)?.ruleId, alias).toBe(
+          'powershell.remove-item-recursive-force-cwd-self',
+        );
+        expect(analyzePowerShell(`${alias} ../other -Recurse -Force`, cwd)?.ruleId, alias).toBe(
+          'powershell.remove-item-recursive-force-outside-cwd',
+        );
+      }
+    });
+  });
+
   test('allows temp targets and blocks outside cwd targets', () => {
     withTempProject((cwd) => {
       expect(analyzePowerShell('Remove-Item /tmp/test-dir -Recurse -Force', cwd)).toBeNull();

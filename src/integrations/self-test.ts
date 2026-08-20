@@ -49,6 +49,7 @@ const SNAPSHOT: PolicySnapshot = Object.freeze({
       enabled: true,
       disabledRules: Object.freeze([]),
       denyPaths: Object.freeze([]),
+      allowPaths: Object.freeze([]),
     }),
   }),
 });
@@ -67,12 +68,6 @@ const STANDARD_MODES = {
       source: 'preset' as const,
       sources: [] as string[],
     },
-  },
-  sources: {
-    failClosed: [] as string[],
-    paranoidRm: [] as string[],
-    paranoidInterpreters: [] as string[],
-    worktreeMode: [] as string[],
   },
 };
 

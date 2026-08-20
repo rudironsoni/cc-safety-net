@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { BunPlugin } from 'bun';
 import pkg from '../package.json';
-import { buildAmpArtifactHeader } from '../src/integrations/amp/artifact';
+import { AMP_PLUGIN_ENTRY, buildAmpArtifactHeader } from '../src/integrations/amp/artifact';
 import {
   buildOpenClawArtifactHeader,
   buildOpenClawPluginManifests,
@@ -11,9 +11,10 @@ import {
 } from '../src/integrations/openclaw/artifact';
 import { guiAssetsPlugin } from './gui-assets';
 
-// zod modules the inlined copy replaces with a stub. Every one of them is
+// zod modules the bundled copies replace with a stub. Every one of them is
 // reachable only through an entry point the guard runtime never calls, and each
-// costs the two self-contained plugin artifacts real bytes:
+// costs the Amp plugin, the OpenClaw plugin, and the vendored dist/vendor/zod.cjs
+// real bytes:
 //   - locales/index.js is the `z.locales` barrel over ~40 translations. zod
 //     imports `en` directly and installs it as the default error map, so a
 //     translation is reachable only through `z.config(z.locales.xx())`.
@@ -41,12 +42,20 @@ const ZOD_MODULE_STUBS: readonly [RegExp, string][] = [
   ],
 ];
 
-// The Node/Pi bundles keep zod external and resolve it from the installed
-// package's node_modules. The Amp and OpenClaw plugins ship as copied files with
-// no node_modules, so they must inline zod. schema.ts loads zod lazily through
-// `createRequire('zod')` (a runtime require the bundler cannot follow); this
-// plugin rewrites that one call into a static import so zod is bundled, without
-// changing schema.ts or the other bundles' lazy-load behavior.
+const zodModuleStubs: BunPlugin = {
+  name: 'zod-module-stubs',
+  setup(build) {
+    for (const [filter, contents] of ZOD_MODULE_STUBS) {
+      build.onLoad({ filter }, () => ({ contents, loader: 'js' }));
+    }
+  },
+};
+
+// The Amp and OpenClaw plugins ship as single copied files, so they inline zod
+// statically. schema.ts loads zod lazily through `createRequire('zod')` (a
+// runtime require the bundler cannot follow); this plugin rewrites that one call
+// into a static import so zod is bundled, without changing schema.ts or the
+// split Node bundles' lazy-load behavior.
 const inlineZod: BunPlugin = {
   name: 'inline-zod',
   setup(build) {
@@ -63,9 +72,27 @@ const inlineZod: BunPlugin = {
       }, source);
       return { contents, loader: 'ts' };
     });
-    for (const [filter, contents] of ZOD_MODULE_STUBS) {
-      build.onLoad({ filter }, () => ({ contents, loader: 'js' }));
-    }
+  },
+};
+
+// The split Node bundles ship in repository checkouts (Claude Code marketplace,
+// Codex, Copilot CLI, Kimi Code) that never run a package manager, so
+// `require('zod')` has no node_modules to resolve from. Repoint schema.ts's lazy
+// require at the vendored copy buildRuntimeBundles emits, keeping zod parsed only
+// when a custom-rule config exists. schema.ts lands in the shared chunk
+// (dist/chunks/), so the specifier resolves to dist/vendor/zod.cjs.
+const vendorZod: BunPlugin = {
+  name: 'vendor-zod',
+  setup(build) {
+    build.onLoad({ filter: /src[\\/]policy[\\/]schema\.ts$/ }, async (args) => {
+      const source = await Bun.file(args.path).text();
+      const from = "const z = require('zod') as typeof Zod;";
+      if (!source.includes(from)) throw new Error(`vendor-zod: missing "${from}"`);
+      return {
+        contents: source.replace(from, "const z = require('../vendor/zod.cjs') as typeof Zod;"),
+        loader: 'ts',
+      };
+    });
   },
 };
 
@@ -74,7 +101,6 @@ export async function buildRuntimeBundles(outdir: string) {
     entrypoints: ['src/index.ts', 'src/cli/cc-safety-net.ts', 'src/integrations/pi/index.ts'],
     outdir,
     target: 'node',
-    external: ['zod'],
     splitting: true,
     naming: {
       entry: '[dir]/[name].[ext]',
@@ -84,7 +110,7 @@ export async function buildRuntimeBundles(outdir: string) {
     define: {
       __PKG_VERSION__: JSON.stringify(pkg.version),
     },
-    plugins: [guiAssetsPlugin],
+    plugins: [guiAssetsPlugin, vendorZod],
   });
   if (!result.success) return result;
   // Bun names a split entry's output directory after its source directory, so
@@ -108,15 +134,29 @@ export async function buildRuntimeBundles(outdir: string) {
       await emitted.delete();
     }),
   );
+  // The ESM entry, not index.cjs: zod's CJS tree uses `.cjs` filenames the stub
+  // filters do not match. `.cjs` so Node loads the output as CommonJS despite the
+  // package's "type": "module".
+  const vendorResult = await Bun.build({
+    entrypoints: ['node_modules/zod/index.js'],
+    target: 'node',
+    format: 'cjs',
+    minify: true,
+    plugins: [zodModuleStubs],
+  });
+  if (!vendorResult.success) return vendorResult;
+  const vendored = vendorResult.outputs[0];
+  if (!vendored) throw new Error('Vendored zod build produced no output');
+  await Bun.write(join(outdir, 'vendor', 'zod.cjs'), vendored);
   return result;
 }
 
 /**
- * Build the standalone Amp plugin artifact separately from the split Node
- * bundles: target Bun, no code splitting, and every runtime dependency
- * (including zod) bundled so the emitted file has no chunk or package imports.
- * The managed-file header is prepended so the installer and doctor can detect
- * and update it.
+ * Build the standalone Amp plugin artifact separately from the split Node bundles. The
+ * `cc-safety-net/index.ts` directory layout is significant: Amp materializes global directory
+ * plugins as a plugin tree, whereas a root file is base64-encoded into one process environment
+ * entry and exceeds Linux's per-entry limit. Every runtime dependency remains bundled so the
+ * directory still contains one self-contained file.
  */
 export async function buildAmpBundle(outdir: string) {
   const result = await Bun.build({
@@ -127,12 +167,12 @@ export async function buildAmpBundle(outdir: string) {
     define: {
       __PKG_VERSION__: JSON.stringify(pkg.version),
     },
-    plugins: [inlineZod],
+    plugins: [inlineZod, zodModuleStubs],
   });
   if (!result.success) return result;
   const artifact = result.outputs[0];
   if (!artifact) throw new Error('Amp bundle produced no output');
-  const destination = join(outdir, 'amp', 'cc-safety-net.ts');
+  const destination = join(outdir, 'amp', AMP_PLUGIN_ENTRY);
   mkdirSync(dirname(destination), { recursive: true });
   await Bun.write(destination, buildAmpArtifactHeader(pkg.version) + (await artifact.text()));
   return result;
@@ -152,7 +192,7 @@ export async function buildOpenClawBundle(outdir: string) {
     define: {
       __PKG_VERSION__: JSON.stringify(pkg.version),
     },
-    plugins: [inlineZod],
+    plugins: [inlineZod, zodModuleStubs],
   });
   if (!result.success) return result;
   const artifact = result.outputs[0];

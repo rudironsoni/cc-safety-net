@@ -154,17 +154,9 @@ function _warnOnUnsupportedCopilotSource(
   );
 }
 
-function _resolveCopilotInlineDisableSource(inlineSources: {
-  userConfig?: CopilotInlineConfigSource;
-  repoSettings?: CopilotInlineConfigSource;
-  localSettings?: CopilotInlineConfigSource;
-}): string | undefined {
-  const precedence = [
-    inlineSources.localSettings,
-    inlineSources.repoSettings,
-    inlineSources.userConfig,
-  ];
-
+function _resolveCopilotInlineDisableSource(
+  precedence: readonly (CopilotInlineConfigSource | undefined)[],
+): string | undefined {
   for (const source of precedence) {
     if (source?.config.disableAllHooks === true) return source.path;
     if (source?.config.disableAllHooks === false) return undefined;
@@ -186,19 +178,28 @@ function _checkCopilotEnabled(
   const repoHookDir = join(cwd, '.github', 'hooks');
   const userHookDir = join(configHome, 'hooks');
   const repoConfigDir = join(cwd, '.github', 'copilot');
+  const repoClaudeDir = join(cwd, '.claude');
   const inlineSupport = _supportsCopilotInlineHooks(copilotCliVersion);
   const inlineErrors = inlineSupport === true ? errors : undefined;
-  const inlineSources = {
-    userConfig: _collectCopilotInlineConfig(join(configHome, 'config.json'), inlineErrors),
-    repoSettings: _collectCopilotInlineConfig(join(repoConfigDir, 'settings.json'), inlineErrors),
-    localSettings: _collectCopilotInlineConfig(
-      join(repoConfigDir, 'settings.local.json'),
-      inlineErrors,
-    ),
-  };
+  // Repository sources outrank user sources, and within the user scope `settings.json` is the
+  // current file while `config.json` stays readable because the host still merges its values.
+  // Copilot also reads the cross-tool `.claude` settings files, which rank below its native ones.
+  const repoInlineSources = [
+    _collectCopilotInlineConfig(join(repoConfigDir, 'settings.local.json'), inlineErrors),
+    _collectCopilotInlineConfig(join(repoConfigDir, 'settings.json'), inlineErrors),
+    _collectCopilotInlineConfig(join(repoClaudeDir, 'settings.local.json'), inlineErrors),
+    _collectCopilotInlineConfig(join(repoClaudeDir, 'settings.json'), inlineErrors),
+  ];
+  const userInlineSources = [
+    _collectCopilotInlineConfig(join(configHome, 'settings.json'), inlineErrors),
+    _collectCopilotInlineConfig(join(configHome, 'config.json'), inlineErrors),
+  ];
 
   if (inlineSupport !== false) {
-    const disableSource = _resolveCopilotInlineDisableSource(inlineSources);
+    const disableSource = _resolveCopilotInlineDisableSource([
+      ...repoInlineSources,
+      ...userInlineSources,
+    ]);
     if (disableSource) {
       if (inlineSupport === null) {
         errors.push(
@@ -232,19 +233,14 @@ function _checkCopilotEnabled(
     userHookPaths.length = 0;
   }
 
-  const inlinePaths: string[] = [];
-  const inlineSourcesByPrecedence = [
-    inlineSources.localSettings,
-    inlineSources.repoSettings,
-    inlineSources.userConfig,
-  ];
+  const inlineMatches: CopilotInlineConfigSource[] = [];
 
-  for (const source of inlineSourcesByPrecedence) {
+  for (const source of [...repoInlineSources, ...userInlineSources]) {
     if (!source) continue;
     if (!_hasSafetyNetCopilotHook(source.config)) continue;
 
     if (inlineSupport === true) {
-      inlinePaths.push(source.path);
+      inlineMatches.push(source);
       continue;
     }
 
@@ -257,12 +253,18 @@ function _checkCopilotEnabled(
     break;
   }
 
+  const matchedInlinePaths = (group: readonly (CopilotInlineConfigSource | undefined)[]) =>
+    group
+      .filter(
+        (source): source is CopilotInlineConfigSource => !!source && inlineMatches.includes(source),
+      )
+      .map((source) => source.path);
+
   return {
     activeConfigPaths: [
-      ...inlinePaths.filter((path) => path.endsWith('settings.local.json')),
-      ...inlinePaths.filter((path) => path.endsWith('settings.json')),
+      ...matchedInlinePaths(repoInlineSources),
       ...repoHookPaths,
-      ...inlinePaths.filter((path) => path.endsWith('config.json')),
+      ...matchedInlinePaths(userInlineSources),
       ...userHookPaths,
     ],
   };

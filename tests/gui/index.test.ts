@@ -26,7 +26,7 @@ import { doctorIntegrationOrder, getIntegrationDisplayName } from '@/integration
 import type { InstallAction, InstallTarget } from '@/integrations/install/targets';
 import { getPackageVersion } from '@/integrations/system-info';
 import { getUserPolicyPath } from '@/policy/store';
-import { mockVersionFetcher, writeJsonlFixture } from '../helpers';
+import { mockVersionFetcher, withEnv, writeJsonlFixture } from '../helpers';
 import { syncInitialGitRulebook } from '../helpers/rulebook';
 
 interface PolicyApiResponse {
@@ -42,7 +42,7 @@ interface PolicyApiResponse {
   version: string;
   preview: {
     selectedPreset: string;
-    counts: { enabled: number; inheritedRequiresStrict: number; inheritedRequiresParanoid: number };
+    counts: { enabled: number };
   } | null;
 }
 
@@ -847,7 +847,7 @@ describe('policy GUI server', () => {
       expect(missing.version).toBe(getPackageVersion());
       expect(missing.preview).toMatchObject({
         selectedPreset: 'standard',
-        counts: { enabled: 48, inheritedRequiresStrict: 5, inheritedRequiresParanoid: 3 },
+        counts: { enabled: 49 },
       });
 
       mkdirSync(safetyNetHome, { recursive: true });
@@ -923,7 +923,7 @@ describe('policy GUI server', () => {
         errors: string[];
         preview: {
           selectedPreset: string;
-          counts: { enabled: number; explicitOn: number; effectiveCustomizations: number };
+          counts: { enabled: number; effectiveCustomizations: number };
           rules: Record<string, { enabled: boolean; source: string }>;
         };
       }>(`${server.origin}/api/policy/preview?token=${server.token}`, server.token, {
@@ -937,8 +937,7 @@ describe('policy GUI server', () => {
       expect(result.errors).toEqual([]);
       expect(result.preview.selectedPreset).toBe('standard');
       expect(result.preview.counts).toMatchObject({
-        enabled: 49,
-        explicitOn: 1,
+        enabled: 50,
         effectiveCustomizations: 1,
       });
       expect(result.preview.rules['shell.dynamic-executable']).toMatchObject({
@@ -2102,6 +2101,24 @@ describe('policy GUI server', () => {
 
     expect(result.ok).toBe(false);
     expect(result.output).toContain('distinct-failure-text');
+  });
+
+  test('runIntegration returns the install report written to the install output stream', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'gui-install-report-'));
+    // runInstallCommand writes its per-target report to `output`, never to the console, so
+    // the GUI status box stays empty unless runIntegration captures that stream too.
+    const result = await withEnv({ HOME: homeDir, npm_config_cache: join(homeDir, '.npm') }, () =>
+      runIntegration('install', 'cursor', {
+        probeTargets: () => false,
+        detectConfiguredTargets: async () => [],
+      }),
+    );
+    rmSync(homeDir, { recursive: true, force: true });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe(
+      `Installed ${getIntegrationDisplayName('cursor')} hook in ${join(homeDir, '.cursor', 'hooks.json')}`,
+    );
   });
 
   test('runIntegration serializes concurrent runs so captured output never mixes', async () => {

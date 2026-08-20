@@ -50,7 +50,13 @@ function readConfigFileInput(path: string | PolicyFilesystemTarget): ConfigFileI
 
     return { ok: true, parsed: JSON.parse(content) as unknown };
   } catch (error) {
-    errors.push(error instanceof PolicyFilesystemError ? error.message : 'Invalid JSON');
+    if (error instanceof PolicyFilesystemError) {
+      errors.push(error.message);
+      return { ok: false, result: { errors, ruleNames } };
+    }
+    // Only a parse failure means malformed JSON; every other failure names itself.
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push(error instanceof SyntaxError ? 'Invalid JSON' : message);
     return { ok: false, result: { errors, ruleNames } };
   }
 }

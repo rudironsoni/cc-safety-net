@@ -5,7 +5,6 @@ import type { ToolInvocation } from '@/ir/invocation';
 import type {
   CommandFactUsage,
   CommandSyntaxFacts,
-  PathFact,
   SemanticFactStore,
   SemanticFacts,
   ShellSyntaxEntry,
@@ -37,7 +36,7 @@ const PATH_LIKE_KEYS = new Set([
 ]);
 const GREP_KEYS = new Set([...PATH_LIKE_KEYS, 'glob']);
 const GLOB_KEYS = new Set([...GREP_KEYS, 'pattern']);
-const EMPTY_SHELL_SYNTAX_ENTRIES = Object.freeze([]) as readonly ShellSyntaxEntry[];
+const EMPTY_SHELL_SYNTAX_ENTRIES: readonly ShellSyntaxEntry[] = [];
 
 export type FactParserDependencies = {
   parseCommand: typeof parseCommand;
@@ -76,42 +75,35 @@ export function createSemanticFacts(
     if (existingIndex !== -1) {
       const existing = facts[existingIndex];
       if (!existing) return facts;
-      facts[existingIndex] = freezeCommandFact({
+      facts[existingIndex] = {
         ...existing,
         usages: [...existing.usages, candidate.usage],
-      });
+      };
       return facts;
     }
     const dialect = invocation.route.kind === 'command' ? invocation.route.shell : 'posix';
     const program = store.getCommandProgram(candidate.source, dialect);
-    facts.push(
-      freezeCommandFact({
-        usages: [candidate.usage],
-        source: candidate.source,
-        program,
-        views: projectAnalysisOrder(program),
-        uncertainties: program.issues,
-        shell: store.getShellSyntax(candidate.source, program),
-      }),
-    );
+    facts.push({
+      usages: [candidate.usage],
+      source: candidate.source,
+      program,
+      views: projectAnalysisOrder(program),
+      uncertainties: program.issues,
+      shell: store.getShellSyntax(candidate.source, program),
+    });
     return facts;
   }, []);
 
-  return Object.freeze({
-    invocation: Object.freeze({
+  return {
+    invocation: {
       toolName: invocation.toolName,
-      route: Object.freeze({ ...invocation.route }),
-      context: Object.freeze({
-        ...invocation.context,
-        ...(invocation.context.policyConfigCwds
-          ? { policyConfigCwds: Object.freeze([...invocation.context.policyConfigCwds]) }
-          : {}),
-      }),
-    }),
-    commands: Object.freeze(commands),
-    paths: Object.freeze(extractDirectPathFacts(invocation)),
+      route: invocation.route,
+      context: invocation.context,
+    },
+    commands,
+    paths: extractDirectPathFacts(invocation),
     store,
-  });
+  };
 }
 
 export function getCommandSyntaxFact(
@@ -152,12 +144,12 @@ export function createSemanticFactStore(
     if (program.status === 'limited') {
       const existing = structuralLimitFacts.get(program);
       if (existing) return existing;
-      const syntax = Object.freeze({
+      const syntax = {
         status: 'structural-limit' as const,
         source,
         entries: EMPTY_SHELL_SYNTAX_ENTRIES,
-        assignmentFallbacks: Object.freeze([]) as readonly string[],
-      });
+        assignmentFallbacks: [],
+      };
       structuralLimitFacts.set(program, syntax);
       return syntax;
     }
@@ -167,52 +159,31 @@ export function createSemanticFactStore(
     shellFacts.set(source, syntax);
     return syntax;
   };
-  return Object.freeze({
+  return {
     getShellSyntax,
     getCommandProgram,
-  });
-}
-
-function freezeCommandFact(fact: CommandSyntaxFacts): CommandSyntaxFacts {
-  return Object.freeze({
-    ...fact,
-    usages: Object.freeze([...fact.usages]),
-    views: Object.freeze([...fact.views]),
-    uncertainties: Object.freeze([...fact.uncertainties]),
-  });
+  };
 }
 
 function projectAnalysisOrder(program: CommandProgram): readonly CommandView[] {
-  return Object.freeze(
-    program.nodes.flatMap((node): CommandView[] => {
-      if (node.kind === 'group') return [...projectAnalysisOrder(node.body)];
-      if (node.kind !== 'command') return [];
-      return [...node.nested.flatMap((nested) => [...projectAnalysisOrder(nested)]), node];
-    }),
-  );
+  return program.nodes.flatMap((node): readonly CommandView[] => {
+    if (node.kind === 'group') return projectAnalysisOrder(node.body);
+    if (node.kind !== 'command') return [];
+    return [...node.nested.flatMap((nested) => projectAnalysisOrder(nested)), node];
+  });
 }
 
-function extractDirectPathFacts(invocation: ToolInvocation): PathFact[] {
+function extractDirectPathFacts(invocation: ToolInvocation): string[] {
   const keys =
     invocation.route.kind === 'grep'
       ? GREP_KEYS
       : invocation.route.kind === 'glob'
         ? GLOB_KEYS
         : PATH_LIKE_KEYS;
-  const access =
-    invocation.route.kind === 'grep' || invocation.route.kind === 'glob'
-      ? 'read'
-      : invocation.route.kind === 'patch'
-        ? 'write'
-        : 'unknown';
   return [
-    ...extractPathLikeToolValues(invocation.input, keys).map((raw) =>
-      Object.freeze({ raw, role: 'tool-path' as const, access }),
-    ),
+    ...extractPathLikeToolValues(invocation.input, keys),
     ...(invocation.route.kind === 'patch'
-      ? extractPatchTargetsFromToolInput(invocation.input).map((raw) =>
-          Object.freeze({ raw, role: 'patch-target' as const, access: 'write' as const }),
-        )
+      ? extractPatchTargetsFromToolInput(invocation.input)
       : []),
   ];
 }

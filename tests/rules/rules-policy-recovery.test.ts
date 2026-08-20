@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import {
   chmodSync,
   existsSync,
@@ -583,6 +583,33 @@ describe('rules policy recovery coverage', () => {
       writeStarterRulebook(join(tempDir, 'starter.json'), 'user-rules');
       expect(readFileSync(join(tempDir, 'starter.json'), 'utf-8')).toContain('User-specific');
     } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  // A plugin install with no node_modules cannot load the schema's zod dependency, and that
+  // failure landed on the same catch as a parse error — reporting a valid file as Invalid JSON.
+  test('a schema failure on valid JSON reports its own message', async () => {
+    const tempDir = makeTempDir('rules-policy-config-schema-failure');
+    const configPath = join(tempDir, 'rule.json');
+    const schema = await import('@/policy/schema');
+    const getRulesConfigValidation = schema.getRulesConfigValidation;
+
+    try {
+      writeDefaultRulesConfig(configPath, ['project-rules']);
+      mock.module('@/policy/schema', () => ({
+        ...schema,
+        getRulesConfigValidation: () => {
+          throw new Error("Cannot find module 'zod'");
+        },
+      }));
+
+      expect(readRulesConfig(configPath)).toEqual({
+        config: null,
+        errors: ["Cannot find module 'zod'"],
+      });
+    } finally {
+      mock.module('@/policy/schema', () => ({ ...schema, getRulesConfigValidation }));
       rmSync(tempDir, { recursive: true, force: true });
     }
   });

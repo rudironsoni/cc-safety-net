@@ -1,13 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { homedir } from 'node:os';
 import {
-  analyzeAwkSystemCalls,
+  analyzeAwkSystemCallMatch,
   extractAwkSystemCommands,
   parseAwkArgv,
   REASON_AWK_SYSTEM_DYNAMIC,
 } from '@/analyzer/awk';
-import { analyzeChildCommand } from '@/analyzer/child-analyzer';
-import { analyzeFind } from '@/analyzer/find';
+import { analyzeChildCommandMatch } from '@/analyzer/child-analyzer';
+import { textCommandWords } from '@/analyzer/command-words';
+import { type AnalyzeFindContext, analyzeFindMatch } from '@/analyzer/find';
 import { TEST_ENVIRONMENT } from '../helpers/environment';
 import {
   analyzeTestCommand as analyzeCommand,
@@ -20,6 +21,21 @@ import {
   withEnv,
   withLinkedWorktreeFixture,
 } from '../helpers.ts';
+
+const analyzeAwkSystemCalls = (
+  tokens: readonly string[],
+  analyzeNested: (command: string) => string | null,
+) =>
+  analyzeAwkSystemCallMatch(tokens, (command) => {
+    const reason = analyzeNested(command);
+    return reason ? { id: '', reason, intent: 'manual_only' } : null;
+  })?.reason ?? null;
+
+const analyzeChildCommand = (...args: Parameters<typeof analyzeChildCommandMatch>) =>
+  analyzeChildCommandMatch(...args)?.reason ?? null;
+
+const analyzeFind = (tokens: readonly string[], context: AnalyzeFindContext) =>
+  analyzeFindMatch(textCommandWords(tokens), context)?.reason ?? null;
 
 const EMPTY_CONFIG: Config = { version: 1, rules: [] };
 const BLOCK_GIT_COMMIT_CONFIG: Config = {

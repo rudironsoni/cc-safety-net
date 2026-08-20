@@ -42,6 +42,7 @@ import {
   extractShellScriptOperandSource,
   extractShellStdinSource,
   extractTrapSource,
+  isVerifiableLocalGeneratorSource,
   shellSourceHasUnresolvedDynamicExecutionCarrier,
 } from '@/analyzer/shell-execution';
 import {
@@ -107,9 +108,7 @@ export function analyzeSegment(
     trace?.recordSegment({
       type: 'env-strip',
       input: texts(commandWords),
-      envVars: Object.fromEntries(
-        [...leading.envAssignments.keys()].map((key) => [key, '<redacted>' as const]),
-      ),
+      envVars: [...leading.envAssignments.keys()],
       output: texts(leading.words),
     });
   }
@@ -162,14 +161,14 @@ export function analyzeSegment(
     dialect,
     prelude.words,
     options.environment,
+    depth === 0,
     options.strict,
     options.policy,
   );
   if (dynamicCommandMatch) {
     trace?.recordSegment({
       type: 'rule-check',
-      ruleModule: 'analyze/segment.ts',
-      ruleFunction: 'analyzeDynamicCommandStructure',
+      rule: 'analyzer/segment.ts:analyzeDynamicCommandStructure',
       matched: true,
       reason: dynamicCommandMatch.reason,
     });
@@ -205,7 +204,14 @@ export function analyzeSegment(
       : normalizedHead === 'trap'
         ? extractTrapSource(words)
         : undefined;
-  if (shellBuiltinSource?.kind === 'dynamic') return dynamicShellSourceResult(trace);
+  if (
+    shellBuiltinSource?.kind === 'dynamic' &&
+    (options.strict ||
+      !options.commandView ||
+      !isVerifiableLocalGeneratorSource(options.commandView))
+  ) {
+    return dynamicShellSourceResult(trace);
+  }
   if (shellBuiltinSource?.kind === 'literal') {
     trace?.recordSegment({
       type: 'recurse',
@@ -306,15 +312,23 @@ export function analyzeSegment(
       stripped[sourceCandidateIndex] === '--' ? sourceCandidateIndex + 1 : sourceCandidateIndex;
     const source = options.commandView ? words[sourceOperandIndex] : undefined;
     if (!source) return null;
-    if (source.provenance !== 'literal') return dynamicShellSourceResult(trace);
-    return analyzeTrackedHeredocScript(
-      source.text,
-      nestedEffectiveCwd,
-      envAssignments,
-      options,
-      trace,
-      depth,
-    );
+    if (source.provenance === 'literal') {
+      return analyzeTrackedHeredocScript(
+        source.text,
+        nestedEffectiveCwd,
+        envAssignments,
+        options,
+        trace,
+        depth,
+      );
+    }
+    if (
+      options.strict ||
+      !options.commandView ||
+      !isVerifiableLocalGeneratorSource(options.commandView)
+    ) {
+      return dynamicShellSourceResult(trace);
+    }
   }
 
   if (AWK_INTERPRETERS.has(normalizedHead)) {
@@ -336,8 +350,7 @@ export function analyzeSegment(
     if (awkReason) {
       trace?.recordSegment({
         type: 'rule-check',
-        ruleModule: 'awk',
-        ruleFunction: 'analyzeAwkSystemCalls',
+        rule: 'awk:analyzeAwkSystemCallMatch',
         matched: true,
         reason: awkReason.reason,
       });
@@ -435,8 +448,7 @@ export function analyzeSegment(
   if (filteredDeviceMatch) {
     trace?.recordSegment({
       type: 'rule-check',
-      ruleModule: 'analyze/device.ts',
-      ruleFunction: 'analyzeDeviceCommand',
+      rule: 'analyzer/device.ts:analyzeDeviceCommandMatch',
       matched: true,
       reason: filteredDeviceMatch.reason,
     });
@@ -620,19 +632,18 @@ function recordCommandAnalyzerTrace(
   match: DestructiveCommandRuleMatch | null,
   relaxation: ReturnType<typeof analyzeGitDetailed>['relaxation'],
 ): void {
-  const details = {
-    git: ['git', 'analyzeGit'],
-    acli: ['analyze/acli.ts', 'analyzeAcli'],
-    rm: ['analyze/rm.ts', 'analyzeRm'],
-    find: ['analyze/find.ts', 'analyzeFind'],
-    xargs: ['analyze/xargs.ts', 'analyzeXargs'],
-    parallel: ['analyze/parallel.ts', 'analyzeParallel'],
+  const rule = {
+    git: 'git:analyzeGitMatch',
+    acli: 'analyzer/acli.ts:analyzeAcliMatch',
+    rm: 'analyzer/rm.ts:analyzeRmMatch',
+    find: 'analyzer/find.ts:analyzeFindMatch',
+    xargs: 'analyzer/xargs.ts:analyzeXargs',
+    parallel: 'analyzer/parallel.ts:analyzeParallel',
   }[context.head];
-  if (!details) return;
+  if (!rule) return;
   context.options.trace?.recordSegment({
     type: 'rule-check',
-    ruleModule: details[0] ?? '',
-    ruleFunction: details[1] ?? '',
+    rule,
     matched: !!match || !!relaxation,
     reason: match?.reason ?? relaxation?.originalReason,
   });

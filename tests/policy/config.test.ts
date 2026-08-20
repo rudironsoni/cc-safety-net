@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -172,6 +172,18 @@ describe('runtime config loading', () => {
     expect(snapshot.state).toBe('degraded');
     return snapshot.state === 'degraded' ? snapshot.reason : '';
   }
+
+  test('uses protective defaults for an empty user policy file', () => {
+    writeUserPolicyRaw('  \n');
+
+    const config = loadTestPolicy(tempDir, { userConfigDir: userRulesDir });
+    const snapshot = loadPolicySnapshot({ cwd: tempDir, userConfigDir: userRulesDir });
+
+    expect(config.destructiveCommandProtectionEnabled).toBe(true);
+    expect(config.secretProtection?.enabled).toBe(true);
+    expect(snapshot.state).toBe('degraded');
+    expect(snapshot.state === 'degraded' ? snapshot.reason : '').toContain('Config file is empty');
+  });
 
   test('user policy safety overrides affect command analysis without env flags', () => {
     writeUserPolicy({
@@ -418,6 +430,17 @@ describe('runtime config loading', () => {
     expect(reason).not.toContain('Invalid JSON:');
   });
 
+  // Only a parse failure means invalid JSON; any other read failure has to name itself,
+  // or a perfectly valid file gets reported as malformed.
+  test('an unreadable policy file reports the read failure instead of Invalid JSON', () => {
+    mkdirSync(join(dirname(userRulesDir), 'policy.json'), { recursive: true });
+
+    const reason = degradedReason();
+
+    expect(reason).toContain('EISDIR');
+    expect(reason).not.toContain('Invalid JSON');
+  });
+
   test('user secret overrides and deny paths apply', () => {
     writeUserPolicy({
       version: 1,
@@ -534,6 +557,29 @@ describe('validate config file', () => {
     const path = join(tempDir, 'config.json');
     writeFileSync(path, '', 'utf-8');
     expect(validateConfigFile(path).errors).toEqual(['Config file is empty']);
+    writeFileSync(path, '{bad json', 'utf-8');
+    expect(validateConfigFile(path).errors).toEqual(['Invalid JSON']);
+  });
+
+  // Reporting a read failure as invalid JSON hides what actually went wrong on a valid file.
+  test('an unexpected read failure reports its own message instead of Invalid JSON', async () => {
+    const filesystem = await import('@/rules/policy/filesystem');
+    const readPolicyFile = filesystem.readPolicyFile;
+    const path = join(tempDir, 'config.json');
+    writeFileSync(path, JSON.stringify({ version: 1 }), 'utf-8');
+
+    try {
+      mock.module('@/rules/policy/filesystem', () => ({
+        ...filesystem,
+        readPolicyFile: () => {
+          throw new Error("Cannot find module 'zod'");
+        },
+      }));
+
+      expect(validateConfigFile(path).errors).toEqual(["Cannot find module 'zod'"]);
+    } finally {
+      mock.module('@/rules/policy/filesystem', () => ({ ...filesystem, readPolicyFile }));
+    }
   });
 
   test('validates rulebook source config files', () => {

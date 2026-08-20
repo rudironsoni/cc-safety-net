@@ -271,7 +271,6 @@ describe('command trace recorder', () => {
         effectiveCapabilities: testModes().capabilities,
         protectedGitMetadata: null,
       },
-      undefined,
       store,
     );
 
@@ -296,7 +295,6 @@ describe('command trace recorder', () => {
         effectiveCapabilities: testModes().capabilities,
         protectedGitMetadata: null,
       },
-      undefined,
       store,
     );
 

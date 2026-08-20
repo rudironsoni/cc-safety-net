@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import { getBundledOutputs, isRootDeclarationOutput } from '../../scripts/build-output';
 import { verifyBuildArtifacts } from '../../scripts/verify-build';
 
@@ -25,18 +26,33 @@ describe('getBundledOutputs', () => {
     expect(isRootDeclarationOutput('dist\\pi\\index.d.ts')).toBeFalse();
   });
 
-  test('keeps the runtime Zod dependency external to the built artifacts', async () => {
-    // The self-contained plugin artifacts ship without node_modules, so they
-    // inline Zod on purpose; every other artifact must resolve it at runtime.
-    const sources = (await verifyBuildArtifacts())
-      .filter((path) => path.endsWith('.js') && !path.startsWith('dist/openclaw/'))
-      .map((path) => readFileSync(path, 'utf-8'));
+  test('lazily loads the vendored Zod copy from the split bundles', async () => {
+    // The split bundles ship in repository checkouts with no node_modules, so
+    // nothing may resolve Zod from a package; they require the vendored copy
+    // instead, and only when a schema is first built.
+    const artifacts = (await verifyBuildArtifacts()).filter(
+      (path) => /\.c?js$/.test(path) && !path.startsWith('dist/openclaw/'),
+    );
+    const sources = artifacts.map((path) => [path, readFileSync(path, 'utf-8')] as const);
 
     // The build minifies identifiers, so the `createRequire` binding schema.ts
     // calls has no stable name; the specifier it is called with does.
-    expect(sources.some((source) => /(?:from|\w+\()"zod"/.test(source))).toBeTrue();
+    expect(sources.some(([, source]) => /(?:from|\w+\()"zod"/.test(source))).toBeFalse();
     // Zod names its internal schema classes with string literals minification
-    // cannot rewrite, so their absence proves no copy was inlined.
-    expect(sources.some((source) => source.includes('"$ZodString"'))).toBeFalse();
+    // cannot rewrite, so their presence marks the copy that holds Zod itself.
+    expect(
+      sources
+        .filter(([path]) => path.endsWith('.js'))
+        .some(([, source]) => source.includes('"$ZodString"')),
+    ).toBeFalse();
+    expect(readFileSync('dist/vendor/zod.cjs', 'utf-8')).toContain('"$ZodString"');
+
+    const vendorConsumers = sources.filter(([, source]) => source.includes('vendor/zod.cjs'));
+    expect(vendorConsumers.length).toBeGreaterThan(0);
+    vendorConsumers.forEach(([path, source]) => {
+      expect(source).toMatch(/\w+\("\.\.\/vendor\/zod\.cjs"\)/);
+      expect(source).not.toMatch(/from\s*"[^"]*vendor\/zod\.cjs"/);
+      expect(posix.join(posix.dirname(path), '../vendor/zod.cjs')).toBe('dist/vendor/zod.cjs');
+    });
   });
 });

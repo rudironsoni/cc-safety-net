@@ -35,12 +35,6 @@ export type SemanticFactStore = {
   readonly getCommandProgram: (source: string, dialect: ShellKind) => CommandProgram;
 };
 
-export type PathFact = {
-  readonly raw: string;
-  readonly role: 'tool-path' | 'patch-target';
-  readonly access: 'read' | 'write' | 'unknown';
-};
-
 export type SemanticFacts = {
   readonly invocation: {
     readonly toolName: string;
@@ -48,6 +42,6 @@ export type SemanticFacts = {
     readonly context: ToolCallContext;
   };
   readonly commands: readonly CommandSyntaxFacts[];
-  readonly paths: readonly PathFact[];
+  readonly paths: readonly string[];
   readonly store: SemanticFactStore;
 };

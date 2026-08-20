@@ -1,4 +1,4 @@
-import { analysisWordText, textCommandWords } from '@/analyzer/command-words';
+import { analysisWordText } from '@/analyzer/command-words';
 import { hasGitSshEnvAssignment } from '@/analyzer/git/env';
 import {
   extractGitSubcommandAndRest,
@@ -26,11 +26,6 @@ const GIT_NETWORK_SUBCOMMANDS = new Set([
   'ls-remote',
   'submodule',
 ]);
-
-/** @internal */
-export function analyzeGit(tokens: readonly string[], options: GitAnalyzeOptions): string | null {
-  return analyzeGitMatch(textCommandWords(tokens), options)?.reason ?? null;
-}
 
 export function analyzeGitMatch(
   words: readonly CommandWord[],

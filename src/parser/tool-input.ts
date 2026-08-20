@@ -24,8 +24,9 @@ const PATH_TOOL_NAMES = new Set([
   'writetofile',
 ]);
 const GREP_TOOL_NAMES = new Set(['grep', 'grepsearch', 'rg']);
-const GLOB_TOOL_NAMES = new Set(['findbyname', 'glob']);
+const GLOB_TOOL_NAMES = new Set(['find', 'findbyname', 'glob']);
 const READ_ONLY_TOOL_NAMES = new Set([
+  'find',
   'findbyname',
   'glob',
   'grep',

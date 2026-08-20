@@ -83,6 +83,19 @@ describe('source architecture', () => {
     expect(violations).toEqual([]);
   });
 
+  test('keeps the parser and ir layers free of third-party imports', () => {
+    // A vendored shell parser or any other bare dependency pulled into src/parser
+    // or src/ir passes every layering test above, which only sees @/ specifiers.
+    const violations = ['parser', 'ir'].flatMap((owner) =>
+      sourceFiles(join(SOURCE_ROOT, owner)).flatMap((path) =>
+        imports(path)
+          .filter((specifier) => !/^(?:node:|@\/|\.)/.test(specifier))
+          .map((specifier) => `${relative(SOURCE_ROOT, path)} -> ${specifier}`),
+      ),
+    );
+    expect(violations).toEqual([]);
+  });
+
   test('contains no source import cycles', () => {
     const files = sourceFiles();
     const byModule = new Map(

@@ -26,6 +26,8 @@ const REASON_RESET_HARD =
 const REASON_RESET_MERGE = "git reset --merge can lose uncommitted changes. Use 'git stash' first.";
 const REASON_CLEAN =
   "git clean -f removes untracked files permanently. Use 'git clean -n' to preview first.";
+const REASON_RM_FORCE =
+  "git rm --force removes tracked files from the working tree. Use 'git rm --cached' to keep the files, or 'git rm --dry-run' to preview first.";
 const REASON_PUSH_FORCE =
   'git push --force destroys remote history. Use --force-with-lease for safer force push.';
 const REASON_PUSH_DELETE =
@@ -122,6 +124,24 @@ export function matchesGitLongOption(token: string, option: string): boolean {
   );
 }
 
+/** The git subcommands `analyzeGitRule` dispatches on, for callers that gate before dispatching. */
+export const GIT_RULE_SUBCOMMANDS = new Set([
+  'branch',
+  'checkout',
+  'clean',
+  'merge',
+  'push',
+  'rebase',
+  'reflog',
+  'reset',
+  'restore',
+  'rm',
+  'stash',
+  'switch',
+  'tag',
+  'worktree',
+]);
+
 export function analyzeGitRule(tokens: readonly string[]): GitRuleMatch | null {
   const { subcommand, rest } = extractGitSubcommandAndRest(tokens);
 
@@ -140,6 +160,8 @@ export function analyzeGitRule(tokens: readonly string[]): GitRuleMatch | null {
       return analyzeGitReset(rest);
     case 'clean':
       return localDiscard(analyzeGitClean(rest));
+    case 'rm':
+      return localDiscard(analyzeGitRm(rest));
     case 'push':
       return sharedState(analyzeGitPush(rest));
     case 'branch':
@@ -450,6 +472,47 @@ function analyzeGitClean(tokens: readonly string[]): DestructiveCommandRuleMatch
   }
 
   return null;
+}
+
+function analyzeGitRm(tokens: readonly string[]): DestructiveCommandRuleMatch | null {
+  let hasForce = false;
+  let hasCached = false;
+  let hasDryRun = false;
+
+  for (const token of splitAtDoubleDash(tokens).before) {
+    if (matchesGitLongOption(token, '--no-force')) {
+      hasForce = false;
+      continue;
+    }
+    if (matchesGitLongOption(token, '--force')) {
+      hasForce = true;
+      continue;
+    }
+    if (matchesGitLongOption(token, '--no-cached')) {
+      hasCached = false;
+      continue;
+    }
+    if (matchesGitLongOption(token, '--cached')) {
+      hasCached = true;
+      continue;
+    }
+    if (matchesGitLongOption(token, '--no-dry-run')) {
+      hasDryRun = false;
+      continue;
+    }
+    if (matchesGitLongOption(token, '--dry-run')) {
+      hasDryRun = true;
+      continue;
+    }
+
+    const shortOpts = extractShortOpts([token]);
+    hasForce ||= shortOpts.has('-f');
+    hasDryRun ||= shortOpts.has('-n');
+  }
+
+  return hasForce && !hasCached && !hasDryRun
+    ? destructiveCommandMatch('git.rm-force', REASON_RM_FORCE)
+    : null;
 }
 
 function analyzeGitPush(tokens: readonly string[]): DestructiveCommandRuleMatch | null {

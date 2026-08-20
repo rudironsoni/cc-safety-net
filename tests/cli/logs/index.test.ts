@@ -124,6 +124,26 @@ function hasTerminalControlBytes(value: string): boolean {
 }
 
 describe('runLogsCommand', () => {
+  test('reports unavailable audit storage without using a real log directory', async () => {
+    await withEnv({ CC_SAFETY_NET_AUDIT_HOME: undefined, NODE_ENV: 'test' }, async () => {
+      const human = await captureLogsCommand([]);
+      const json = await captureLogsCommand(['--json']);
+      const id = await captureLogsCommand(['--id', 'ffffffffffffffff']);
+
+      expect(human).toEqual({
+        exitCode: 0,
+        stdout: 'No audit log entries found.',
+        stderr: '',
+      });
+      expect(json).toEqual({ exitCode: 0, stdout: '[]', stderr: '' });
+      expect(id).toEqual({
+        exitCode: 0,
+        stdout: 'No retained audit log entry found for id ffffffffffffffff.',
+        stderr: '',
+      });
+    });
+  });
+
   test('reads default logs from the configured audit home', async () => {
     const root = mkdtempSync(join(tmpdir(), 'safety-net-logs-command-default-'));
     const auditHome = join(root, 'audit-home');
@@ -167,7 +187,10 @@ describe('runLogsCommand', () => {
   test('prints short timestamps in the user timezone for human output', async () => {
     const root = mkdtempSync(join(tmpdir(), 'safety-net-logs-command-timezone-'));
     const logsDir = join(root, 'logs');
-    const ts = '2026-08-14T01:42:31.582Z';
+    // Yesterday keeps the entry inside the default 30-day window; 01:42 UTC is
+    // 10:42 in fixed-offset Asia/Tokyo on the same calendar day.
+    const day = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const ts = `${day}T01:42:31.582Z`;
     try {
       mkdirSync(logsDir, { recursive: true });
       writeJsonlFixture(join(logsDir, 'timezone.jsonl'), [
@@ -189,8 +212,8 @@ describe('runLogsCommand', () => {
         'Asia/Tokyo',
       );
 
-      expect(table.stdout).toContain('2026-08-14 10:42');
-      expect(detail.stdout).toContain('ts:        2026-08-14 10:42');
+      expect(table.stdout).toContain(`${day} 10:42`);
+      expect(detail.stdout).toContain(`ts:        ${day} 10:42`);
       expect((JSON.parse(json.stdout) as AuditLogEntry[])[0]?.ts).toBe(ts);
     } finally {
       rmSync(root, { recursive: true, force: true });

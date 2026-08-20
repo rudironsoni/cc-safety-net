@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+started_at=$SECONDS
+printf '==> Checking system prerequisites\n'
+
+packages=()
+command -v curl >/dev/null 2>&1 || packages+=(curl)
+command -v unzip >/dev/null 2>&1 || packages+=(unzip)
+
+if ((${#packages[@]} > 0)); then
+  sudo apt-get update
+  sudo apt-get install -y "${packages[@]}"
+fi
+
+node_version=24
+printf '==> Ensuring Node.js %s\n' "$node_version"
+node_install="$HOME/.local/node-v$node_version"
+if [[ ! -x "$node_install/bin/node" ]] || [[ "$("$node_install/bin/node" --version)" != v$node_version.* ]]; then
+  case "$(uname -m)" in
+    x86_64) node_arch=x64 ;;
+    aarch64) node_arch=arm64 ;;
+    *) printf 'Unsupported orb architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
+  esac
+
+  node_tmp="$(mktemp -d)"
+  trap 'rm -rf "$node_tmp"' EXIT
+  curl -fsSL "https://nodejs.org/dist/latest-v$node_version.x/SHASUMS256.txt" -o "$node_tmp/SHASUMS256.txt"
+  node_archive="$(awk -v arch="$node_arch" '$2 ~ ("linux-" arch "\\.tar\\.gz$") { print $2 }' "$node_tmp/SHASUMS256.txt")"
+  [[ -n "$node_archive" ]] || { printf 'Node.js archive not found\n' >&2; exit 1; }
+  curl -fsSL "https://nodejs.org/dist/latest-v$node_version.x/$node_archive" -o "$node_tmp/$node_archive"
+  (cd "$node_tmp" && sha256sum --check --ignore-missing SHASUMS256.txt)
+  rm -rf "$node_install"
+  mkdir -p "$node_install"
+  tar -xzf "$node_tmp/$node_archive" --strip-components=1 -C "$node_install"
+fi
+export PATH="$node_install/bin:$PATH"
+
+if [[ ! -f "$HOME/.bash_profile" ]]; then
+  printf '[ -f ~/.profile ] && . ~/.profile\n' >"$HOME/.bash_profile"
+fi
+
+node_profile_marker='# cc-safety-net Node.js environment'
+if ! grep -Fqx "$node_profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >>"$HOME/.bash_profile" <<EOF
+
+# cc-safety-net Node.js environment
+export PATH="\$HOME/.local/node-v$node_version/bin:\$PATH"
+EOF
+fi
+
+bun_version="$(node -p "require('./package.json').packageManager.split('@')[1]")"
+printf '==> Ensuring Bun %s\n' "$bun_version"
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+if [[ ! -x "$BUN_INSTALL/bin/bun" ]] || [[ "$("$BUN_INSTALL/bin/bun" --version)" != "$bun_version" ]]; then
+  curl -fsSL https://bun.com/install | bash -s "bun-v$bun_version"
+fi
+
+profile_marker='# cc-safety-net Bun environment'
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >>"$HOME/.bash_profile" <<'EOF'
+
+# cc-safety-net Bun environment
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+EOF
+fi
+
+printf '==> Installing locked dependencies\n'
+bun install --frozen-lockfile --ignore-scripts
+
+printf '==> Orb setup complete in %ss\n' "$((SECONDS - started_at))"

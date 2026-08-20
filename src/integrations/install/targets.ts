@@ -1,4 +1,8 @@
-import { type IntegrationId, installIntegrationMetadata } from '@/integrations/catalog';
+import {
+  getIntegrationDisplayName,
+  type IntegrationId,
+  installIntegrationMetadata,
+} from '@/integrations/catalog';
 import type { NativeCommand } from '@/integrations/install/native';
 
 export type InstallAction = 'install' | 'uninstall';
@@ -12,7 +16,7 @@ export const INSTALL_TARGETS: readonly {
 }[] = installIntegrationMetadata.map((integration) => ({
   target: integration.id,
   flag: integration.flag,
-  label: integration.installLabel,
+  label: getIntegrationDisplayName(integration.id),
   probeCommand: integration.probeCommand,
 }));
 

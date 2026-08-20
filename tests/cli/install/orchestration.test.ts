@@ -70,6 +70,7 @@ async function probeInstallChoices(
 
   const exitCode = await withEnv({ HOME: homeDir, PATH: path }, () =>
     runInstallCommand(action, [], {
+      fetchVersion: async () => null,
       output: new Writable({
         write(_chunk, _encoding, callback) {
           callback();
@@ -314,7 +315,7 @@ function makeAmpFakeBin(homeDir: string, seedCheckout: boolean) {
       'case "$1 $2" in',
       `  "plugins repositories") printf '%s\\n' '[{"scope":"user","exists":true,"viewerCanWrite":true,"cloneRef":"tester/-/plugins"}]' ;;`,
       seedCheckout
-        ? `  "clone user-plugins") printf '%s\\n' '${AMP_MANAGED_HEADER}' > "$3/cc-safety-net.ts" ;;`
+        ? `  "clone user-plugins") mkdir -p "$3/cc-safety-net"; printf '%s\\n' '${AMP_MANAGED_HEADER}' > "$3/cc-safety-net/index.ts" ;;`
         : '  "clone user-plugins") : ;;',
       'esac',
     ].join('\n'),
@@ -322,7 +323,7 @@ function makeAmpFakeBin(homeDir: string, seedCheckout: boolean) {
       'printf \'%s\\n\' "$*" >> "$HOME/git.log"',
       'case "$1 $2" in',
       // An empty porcelain status means "nothing staged", which skips the commit and push.
-      '  "status --porcelain") printf \'%s\\n\' "M  cc-safety-net.ts" ;;',
+      '  "status --porcelain") printf \'%s\\n\' "M  cc-safety-net/index.ts" ;;',
       'esac',
     ].join('\n'),
   });
@@ -350,9 +351,7 @@ describe('Amp personal-scope install command', () => {
     const result = await runCli(['install', '--amp'], '', { HOME: homeDir, PATH: path });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain(
-      'Installed Amp Code plugin at tester/-/plugins/cc-safety-net.ts',
-    );
+    expect(result.stdout).toContain('Installed Amp Code plugin at tester/-/plugins/cc-safety-net');
     expect(result.stdout).toContain('including Orb threads');
     expect(readFileSync(join(homeDir, 'git.log'), 'utf-8')).toContain('push origin HEAD');
     expect(existsSync(maskingPlugin)).toBe(false);
@@ -366,9 +365,11 @@ describe('Amp personal-scope install command', () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain(
-      'Uninstalled Amp Code plugin from tester/-/plugins/cc-safety-net.ts',
+      'Uninstalled Amp Code plugin from tester/-/plugins/cc-safety-net',
     );
-    expect(readFileSync(join(homeDir, 'git.log'), 'utf-8')).toContain('rm cc-safety-net.ts');
+    expect(readFileSync(join(homeDir, 'git.log'), 'utf-8')).toContain(
+      'rm -- cc-safety-net/index.ts',
+    );
   });
 
   test('fails with an actionable message when the amp CLI is missing', async () => {

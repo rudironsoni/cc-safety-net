@@ -1,10 +1,11 @@
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, posix, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AWK_INTERPRETERS, extractAwkSystemCommands } from '@/analyzer/awk';
 import {
   createPathCanonicalizationBudget,
   type PathCanonicalizationBudget,
+  PathCanonicalizationLimitError,
   resolveExistingPath,
 } from '@/analyzer/path-canonicalization';
 import { extractXargsChildCommandWithInfo } from '@/analyzer/xargs';
@@ -152,6 +153,11 @@ const CC_SAFETY_NET_ENTRYPOINTS = new Set([
   'src/cli/cc-safety-net.ts',
   'dist/bin/cc-safety-net.js',
 ]);
+// Both published bin names, the runners that resolve a package by name, and the
+// runtimes that execute an entrypoint file (directly or via `run`).
+const CC_SAFETY_NET_BIN_NAMES = new Set(['cc-safety-net', 'ccsn']);
+const PACKAGE_RUNNERS = new Set(['bunx', 'npx', 'pnpx']);
+const SCRIPT_RUNTIMES = new Set(['bun', 'node']);
 const INTERPRETERS_BY_CLUSTERED_CODE_EVAL_FLAG = new Map([
   ['c', new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'python'])],
   ['e', new Set(['node', 'deno', 'bun', 'ruby', 'perl', 'rscript', 'osascript'])],
@@ -215,6 +221,7 @@ type SecretProtectionPolicy = {
   readonly enabled?: boolean;
   readonly disabledRules?: ReadonlySet<string> | readonly string[];
   readonly denyPaths: readonly string[];
+  readonly allowPaths?: readonly string[];
 };
 
 type SecretInspectionOptions = {
@@ -250,6 +257,17 @@ function findSensitivePolicyPathTarget(
     if (activeDefaultTargets && !activeDefaultTargets.has(target)) continue;
     const ruleId = isSensitivePath(target, cwd, config, budget);
     if (ruleId) {
+      // A configured allow entry vouches for paths the user manages themselves
+      // (a repo's .env.test, a fixtures directory). It suppresses the pattern
+      // tiers only: an explicit deny already returned above, and the coding-CLI
+      // tier stays exempt so no allow entry can expose the agent's own
+      // credentials or configuration.
+      if (
+        !ruleId.startsWith('secret.cli.') &&
+        matchesAllowedPath(target, cwd, config?.allowPaths ?? [], configCwd, budget)
+      ) {
+        continue;
+      }
       return { target, ruleId };
     }
   }
@@ -346,6 +364,7 @@ function isMetadataOnlyCommand(facts: SemanticFacts): boolean {
   if (stripped.length === 0) return false;
   const command = basename(stripped[0] ?? '').toLowerCase();
   const args = stripped.slice(1);
+  if (command === 'ls' || command === 'stat') return true;
   if (command === 'test') return args.length === 2 && (args[0] === '-e' || args[0] === '-f');
   if (command !== 'find') return false;
   return !args.some((arg) => FIND_NON_METADATA_ACTIONS.has(arg));
@@ -359,12 +378,12 @@ function extractToolPathTargets(
     const command = getCommandSyntaxFact(facts, 'input-candidate');
     return command ? extractCommandPathTargets(command.shell, facts.store, options) : [];
   }
-  if (facts.invocation.route.kind !== 'unknown') return facts.paths.map((path) => path.raw);
+  if (facts.invocation.route.kind !== 'unknown') return [...facts.paths];
 
   const command = getCommandSyntaxFact(facts, 'input-candidate');
   return [
     ...(command ? extractCommandPathTargets(command.shell, facts.store, options) : []),
-    ...facts.paths.map((path) => path.raw),
+    ...facts.paths,
   ];
 }
 
@@ -477,20 +496,54 @@ function extractSegmentPathTargets(
   ];
 }
 
+/**
+ * How many tokens precede `explain`, or null when this is not a safety-net
+ * explain invocation. Every form the documentation prints is recognized —
+ * `bunx cc-safety-net explain ...` and `bun run <entrypoint> explain ...`
+ * included — because explain only ANALYSES the command it is handed and never
+ * opens it, so a form that is not recognized blocks on its own argument.
+ */
+function safetyNetExplainPrefixLength(command: string, tokens: readonly string[]): number | null {
+  if (CC_SAFETY_NET_BIN_NAMES.has(command)) {
+    return tokens[0] === 'explain' ? 0 : null;
+  }
+  if (PACKAGE_RUNNERS.has(command)) {
+    // The install docs print `npx -y cc-safety-net`, so the consent flag is
+    // part of a documented form. Only that flag is skipped: any other option
+    // changes what the runner resolves and keeps the arguments inspected.
+    const skip = tokens[0] === '-y' || tokens[0] === '--yes' ? 1 : 0;
+    // Exact names only: the runner resolves its target by the token as written,
+    // so `@scope/cc-safety-net` or a path ending in the bin name is a DIFFERENT
+    // program that must keep its arguments inspected.
+    return CC_SAFETY_NET_BIN_NAMES.has(tokens[skip] ?? '') && tokens[skip + 1] === 'explain'
+      ? skip + 1
+      : null;
+  }
+  if (SCRIPT_RUNTIMES.has(command)) {
+    if (isSafetyNetEntrypoint(tokens[0]) && tokens[1] === 'explain') return 1;
+    // Only bun has a `run` subcommand; `node run ...` executes a local script
+    // named `run`, so its arguments must keep being inspected.
+    if (
+      command === 'bun' &&
+      tokens[0] === 'run' &&
+      isSafetyNetEntrypoint(tokens[1]) &&
+      tokens[2] === 'explain'
+    )
+      return 2;
+  }
+  return null;
+}
+
 function extractSafetyNetExplainPathTargets(
   executable: string,
   command: string,
   tokens: readonly string[],
 ): string[] | null {
-  const direct = command === 'cc-safety-net' && tokens[0] === 'explain';
-  const runtime =
-    (command === 'bun' || command === 'node') &&
-    isSafetyNetEntrypoint(tokens[0]) &&
-    tokens[1] === 'explain';
-  if (!direct && !runtime) return null;
+  const prefixLength = safetyNetExplainPrefixLength(command, tokens);
+  if (prefixLength === null) return null;
 
-  const targets = runtime ? [executable, tokens[0] ?? ''] : [executable];
-  const args = tokens.slice(runtime ? 2 : 1);
+  const targets = [executable, ...tokens.slice(0, prefixLength)];
+  const args = tokens.slice(prefixLength + 1);
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     if (arg === '--json' || arg === '--help' || arg === '-h') continue;
@@ -1170,6 +1223,48 @@ const ENV_EXEMPTION_BASENAMES = new Set([
 
 const ENV_EXEMPTION_PREFIXES = ['.env.example.', '.env.sample.'];
 
+// Parsed by the URL API rather than pattern-matched, so scheme casing,
+// userinfo and IPv6 hosts need no bespoke handling. The host check is what
+// keeps a drive-qualified Windows path out: `new URL('C:\\Users\\me\\.npmrc')`
+// parses happily with protocol `c:` and an EMPTY host, and must stay a path.
+// `file:` is excluded because normalizeFileUriPath resolves it to a real local
+// path before any of this runs.
+function isRemoteUrl(target: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(target.trim());
+  } catch {
+    return false;
+  }
+  return url.protocol !== 'file:' && url.host !== '';
+}
+
+// Whitespace is what separates a real filename from a sentence that happens to
+// start with one. Paths containing spaces are unaffected: only the BASENAME is
+// tested, and only for the prefix rules that would otherwise match unbounded
+// trailing text. A candidate that EXISTS is a path whatever it looks like, so
+// a duplicate such as `.env.production copy` is still matched.
+function isFilenameShaped(name: string): boolean {
+  return name.length > 0 && !/\s/.test(name);
+}
+
+function candidateExistsOnDisk(
+  target: string,
+  cwd: string,
+  budget: PathCanonicalizationBudget,
+): boolean {
+  try {
+    const absolute = normalizeAbsoluteCandidatePath(target, cwd, budget);
+    return absolute !== '' && processPathResolver.entryKind(absolute) !== 'missing';
+  } catch (error) {
+    // A budget exhaustion is a deliberate signal the callers act on; anything
+    // else (ENAMETOOLONG, ELOOP, EACCES) only means "cannot confirm it exists",
+    // and this probe is a rescue for the shape heuristic, never the guard.
+    if (error instanceof PathCanonicalizationLimitError) throw error;
+    return false;
+  }
+}
+
 const SKIPPABLE_PATH_SEGMENTS = new Set(['node_modules', '__pycache__']);
 
 const SKIPPABLE_PATH_SEGMENT_PAIRS = [
@@ -1183,6 +1278,14 @@ function isSensitivePath(
   config: SecretProtectionPolicy | undefined,
   budget: PathCanonicalizationBudget,
 ): string | null {
+  // A remote URL names something on another host, so no local secret can be
+  // read through it: `curl https://raw.githubusercontent.com/o/r/main/.env.test`
+  // touches nothing on this machine. `file:` URLs are excluded because
+  // normalizeFileUriPath turns those into real local paths first.
+  if (isRemoteUrl(target)) {
+    return null;
+  }
+
   const normalized = normalizeCandidatePath(target, cwd, budget);
   if (!normalized) {
     return null;
@@ -1190,6 +1293,13 @@ function isSensitivePath(
 
   const comparableName = comparable(normalized.split('/').pop() ?? '');
   const comparablePath = comparable(normalized);
+  // Prefix rules below match the START of a basename, so they need a candidate
+  // that could be a filename at all. Without this, any prose beginning with
+  // `.env.` or `id_rsa-` is read as a path — and the exemption lists, which
+  // compare basenames exactly, cannot rescue it: the sentence fragment
+  // `.env.example) and then ...` was blocked while `.env.example` is allowed.
+  const isFilenameShapedName = () =>
+    isFilenameShaped(comparableName) || candidateExistsOnDisk(target, cwd, budget);
 
   // Env templates (.env.example, ...) stay readable even inside sensitive
   // directories, matching the original caller-side exemption.
@@ -1202,10 +1312,18 @@ function isSensitivePath(
 
   // Sensitive home directories (~/.ssh, ~/.aws, ...) are deny-by-default
   // wholesale and take priority over the public-key exemption below.
+  //
+  // Matched against the un-resolved home-relative form as well, because these
+  // rules name a LITERAL location: dotfile managers, password managers and
+  // encrypted volumes commonly make ~/.ssh a symlink, and canonicalizing the
+  // candidate rewrites it to the link target, which no longer starts with
+  // `~/.ssh`. Resolving the link would otherwise disable the rule that names it.
+  const comparableUnresolvedPath = comparable(normalizeUnresolvedHomePath(target, cwd, budget));
   for (const rule of SECRET_HOME_PATH_RULES) {
-    const suffix = rule.suffixParts.join('/');
+    const prefix = `~/${rule.suffixParts.join('/')}`;
     if (
-      (comparablePath === `~/${suffix}` || comparablePath.startsWith(`~/${suffix}/`)) &&
+      (isSameOrChildHomePath(comparablePath, prefix) ||
+        isSameOrChildHomePath(comparableUnresolvedPath, prefix)) &&
       isSecretRuleEnabled(rule.id, config)
     ) {
       return rule.id;
@@ -1221,7 +1339,8 @@ function isSensitivePath(
   }
   if (
     comparableName.startsWith(ENV_PREFIX) &&
-    isSecretRuleEnabled(SECRET_ENV_VARIANT_RULE.id, config)
+    isSecretRuleEnabled(SECRET_ENV_VARIANT_RULE.id, config) &&
+    isFilenameShapedName()
   ) {
     return SECRET_ENV_VARIANT_RULE.id;
   }
@@ -1231,7 +1350,13 @@ function isSensitivePath(
   for (const rule of SECRET_VARIANT_SEPARATOR_RULES) {
     if (comparableName.length > rule.prefix.length && comparableName.startsWith(rule.prefix)) {
       const next = comparableName.slice(rule.prefix.length)[0];
-      if ((next === '-' || next === '_') && isSecretRuleEnabled(rule.id, config)) return rule.id;
+      if (
+        (next === '-' || next === '_') &&
+        isSecretRuleEnabled(rule.id, config) &&
+        isFilenameShapedName()
+      ) {
+        return rule.id;
+      }
     }
   }
   for (const rule of SECRET_VARIANT_DOT_SUFFIX_RULES) {
@@ -1588,6 +1713,57 @@ function matchesPolicyPath(
   );
 }
 
+// Allow entries are literal and use exactly the deny-path semantics:
+// same-or-child of a fully normalized root, symlinks resolved on both sides.
+// Validation rejects glob entries, so an entry that still contains `*` or `?`
+// simply never equals a real normalized path.
+function matchesAllowedPath(
+  target: string,
+  cwd: string,
+  allowPaths: readonly string[],
+  configCwd: string,
+  budget: PathCanonicalizationBudget,
+): boolean {
+  if (allowPaths.length === 0) return false;
+  const normalized = comparable(normalizeAbsoluteCandidatePath(target, cwd, budget));
+  if (!normalized) return false;
+  const homeValue = process.env.HOME ?? homedir();
+  const resolvedHome = homeValue
+    ? normalizePathText(resolveExistingPath(homeValue, processPathResolver, budget))
+    : '';
+  const home = comparable(resolvedHome);
+  const guardHomeValue = process.env.CC_SAFETY_NET_HOME;
+  // Both roots go through the filesystem: a dotfile-managed ~/.cc-safety-net
+  // symlink would otherwise leave the lexical default root pointing away from
+  // where candidate normalization already followed the link.
+  const guardRoot = comparable(
+    guardHomeValue
+      ? normalizePathText(resolveExistingPath(resolve(guardHomeValue), processPathResolver, budget))
+      : resolvedHome &&
+          normalizePathText(
+            resolveExistingPath(`${resolvedHome}/.cc-safety-net`, processPathResolver, budget),
+          ),
+  );
+  // No target under the guard's own configuration is ever exemptible. The
+  // save-time validator rejects literal entries in there, but it cannot see
+  // relative entries, env expansion, a CC_SAFETY_NET_HOME override, or an
+  // entry ABOVE a custom guard root — so the boundary is enforced on the
+  // target, where the effective guard root is finally known.
+  if (guardRoot && isSameOrChildPath(normalized, guardRoot)) return false;
+  return allowPaths.some((entry) => {
+    const root = comparable(normalizeAbsoluteCandidatePath(entry, configCwd, budget));
+    if (!root) return false;
+    // Validation rejects literal entries that cover home, but an entry can
+    // still RESOLVE there at match time (env expansion, relative segments
+    // against the config cwd), and such a root would exempt every secret
+    // under home. Refuse it here, where the resolved root is finally known.
+    if (home && (home === root || home.startsWith(root.endsWith('/') ? root : `${root}/`))) {
+      return false;
+    }
+    return isSameOrChildPath(normalized, root);
+  });
+}
+
 function isSkippablePathForBroadSignatures(comparablePath: string): boolean {
   const parts = comparablePath.split('/');
   return (
@@ -1652,6 +1828,45 @@ function normalizeCandidatePath(
   return relativeHomePath ? `~${relativeHomePath}` : '~';
 }
 
+function isSameOrChildHomePath(path: string, prefix: string): boolean {
+  return path === prefix || path.startsWith(`${prefix}/`);
+}
+
+/**
+ * The home-relative form of a candidate WITHOUT resolving symlinks, or '' when
+ * it does not sit under the home directory. Home rules name a literal location,
+ * so they must see the path the user wrote, not where a link points.
+ */
+function normalizeUnresolvedHomePath(
+  target: string,
+  cwd: string,
+  budget: PathCanonicalizationBudget,
+): string {
+  const { home, normalized } = prepareCandidatePath(target, budget);
+  if (!normalized || !home) return '';
+  const expanded = expandHomePath(normalized, home);
+  // Lexically collapsed (never through the filesystem): a `..` before the
+  // credential directory would otherwise hide it from the literal comparison,
+  // and a `..` after it would drag ordinary siblings into the rule.
+  const absolute = posix.normalize(
+    isAbsolute(expanded) ? expanded : normalizePathText(resolve(cwd, expanded)),
+  );
+  // The home root itself may be reached through a symlinked ancestor (on macOS
+  // /var is a link to /private/var), so an absolute candidate is tested against
+  // both the canonical and the literal home root before being given up on.
+  const literalHome = normalizePathText(process.env.HOME ?? homedir());
+  // Windows paths are case-insensitive and agents routinely re-case drive
+  // letters, so the roots match case-folded there; POSIX casing is
+  // identity-bearing and stays exact.
+  const fold = (value: string) => (process.platform === 'win32' ? value.toLowerCase() : value);
+  const root = [home, literalHome].find(
+    (candidate) => candidate !== '' && isSameOrChildPath(fold(absolute), fold(candidate)),
+  );
+  if (root === undefined) return '';
+  const relativeHomePath = absolute.slice(root.length);
+  return relativeHomePath ? `~${relativeHomePath}` : '~';
+}
+
 function normalizeAbsoluteCandidatePath(
   target: string,
   cwd: string,
@@ -1693,10 +1908,31 @@ function expandHomePath(path: string, home: string): string {
   return path;
 }
 
+/**
+ * Whether a backslash in this candidate separates path components.
+ *
+ * On Windows it always does. Off Windows it does so only for a candidate that
+ * is drive-qualified (`C:\...`, `D:/...`) or UNC (`\\server\share`), which is
+ * asked of `node:path` rather than pattern-matched so the platform's own
+ * definition covers the forward-slash drive form and extended-length prefixes.
+ * A Windows root longer than one character is exactly that set — `win32`
+ * reports a bare `\` as an absolute root too, and off Windows `\.npmrc` is a
+ * regex for `.npmrc`, not the drive-relative path it would be on Windows.
+ *
+ * Everything else off Windows keeps its backslashes, because there a backslash
+ * is an escape character: rewriting it turned the surviving regex text of
+ * `git grep "process\.env"` into `process/.env`, whose basename is `.env`.
+ * Shell-level escapes never reach here — the parser removes them first — so
+ * `cat \.env` still arrives as `.env` and stays blocked.
+ */
+function usesBackslashSeparators(value: string): boolean {
+  if (process.platform === 'win32') return true;
+  return win32.parse(value).root.length > 1;
+}
+
 function normalizePathText(value: string): string {
-  const normalized = value
-    .trim()
-    .replace(/\\/g, '/')
+  const trimmed = value.trim();
+  const normalized = (usesBackslashSeparators(trimmed) ? trimmed.replace(/\\/g, '/') : trimmed)
     .replace(/\/{2,}/g, '/')
     .replace(/^\.\//, '');
   if (normalized === '/') {

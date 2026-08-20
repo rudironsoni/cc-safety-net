@@ -221,12 +221,14 @@ esac
  * Run the generated plugin under a stub adapter, forcing one transport outcome.
  * Returns the directive it handed back to Hermes plus the payload the stub received.
  * `hermes` seeds the session cwd record; `null` stands for a Hermes without those modules.
+ * `extraEnv` reaches the plugin process, which is how `TERMINAL_CWD` is set for a case.
  */
 function runPluginCallback(
   mode: string,
   tool: string,
   args: Record<string, unknown>,
   hermes: { sessionCwd?: string } | null = {},
+  extraEnv: Record<string, string> = {},
 ) {
   const dir = makeTempHome('safety-net-hermes-python');
   try {
@@ -262,6 +264,7 @@ function runPluginCallback(
           CC_SAFETY_NET_TEST_PAYLOAD: payloadPath,
           CC_SAFETY_NET_TEST_SPAWN_CWD: spawnCwdPath,
           CC_SAFETY_NET_TEST_GRANDCHILD_PID: grandchildPidPath,
+          ...extraEnv,
         },
       },
     );
@@ -379,11 +382,33 @@ describe('Hermes Agent plugin artifact', () => {
       expect(run.payload?.cwd).not.toBe(run.cwd);
     });
 
-    // Hermes' own first-command behaviour: no record yet, so the command runs in the process cwd.
-    test('falls back to the process directory when the session has no cwd record', () => {
-      const run = runPluginCallback('allow', 'terminal', { command: 'ls' });
+    // Without a record the Hermes local terminal backend runs the command in
+    // `os.getenv("TERMINAL_CWD", <process cwd>)`, and `hermes_cli/config.py` bridges the
+    // configured `terminal.cwd` into that variable — so the process directory is the last resort.
+    test('analyses a terminal call in TERMINAL_CWD when the session has no cwd record', () => {
+      const run = runPluginCallback(
+        'allow',
+        'terminal',
+        { command: 'rm policy.json' },
+        {},
+        { TERMINAL_CWD: '/terminal/configured' },
+      );
 
-      expect(run.payload?.cwd).toBe(run.cwd);
+      expect(run.payload?.cwd).toBe('/terminal/configured');
+      expect(run.payload?.cwd).not.toBe(run.cwd);
+    });
+
+    // The record is the session's live `cd` state, so it outranks the configured default.
+    test('prefers the session cwd record over TERMINAL_CWD', () => {
+      const run = runPluginCallback(
+        'allow',
+        'terminal',
+        { command: 'rm policy.json' },
+        { sessionCwd: '/session/elsewhere' },
+        { TERMINAL_CWD: '/terminal/configured' },
+      );
+
+      expect(run.payload?.cwd).toBe('/session/elsewhere');
     });
 
     // A Hermes refactor that moves the accessor leaves us unable to tell which directory the
@@ -413,7 +438,10 @@ describe('Hermes Agent plugin artifact', () => {
       expect(isRunning(run.grandchildPid)).toBe(false);
     });
 
-    test('registers pre_tool_call and sends the payload the adapter expects', () => {
+    // Hermes' own first-command behaviour: no record yet, so the command runs in the process cwd.
+    // A repository-local node_modules/.bin/cc-safety-net would otherwise win the `npx` lookup
+    // from Hermes' own working directory and stand in for the analyzer.
+    test('registers the hook and sends the payload from the correct directories', () => {
       const run = runPluginCallback('allow', 'terminal', { command: 'ls' });
 
       expect(run.hookName).toBe('pre_tool_call');
@@ -424,13 +452,6 @@ describe('Hermes Agent plugin artifact', () => {
         session_id: 'sess-1',
         cwd: run.cwd,
       });
-    });
-
-    // A repository-local node_modules/.bin/cc-safety-net would otherwise win the `npx` lookup
-    // from Hermes' own working directory and stand in for the analyzer.
-    test('spawns the analyzer from the user home while still reporting the Hermes cwd', () => {
-      const run = runPluginCallback('allow', 'terminal', { command: 'ls' });
-
       expect(run.spawnCwd).toBe(process.env.HOME);
       expect(run.spawnCwd).not.toBe(run.cwd);
       expect(run.payload?.cwd).toBe(run.cwd);

@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PATH_CANONICALIZATION_LIMITS } from '@/analyzer/path-canonicalization';
@@ -48,6 +48,37 @@ describe('Claude Code hook', () => {
         if (shape === undefined) {
           expect(readLatestAuditLogEntry(context.home, sessionId)).not.toHaveProperty('shape');
         }
+      });
+    });
+
+    test('persists exactly the audited fields for a denied command', async () => {
+      await withHookTestContext(async (context) => {
+        const sessionId = 'audit-key-set';
+
+        await context.runClaudeCodeHook({
+          ...context.claudeCodeBashInput('git reset --hard'),
+          session_id: sessionId,
+        });
+
+        // Equality, not a subset: a field added to the persisted entry for
+        // debugging would slip past every partial audit assertion.
+        expect(Object.keys(readLatestAuditLogEntry(context.home, sessionId))).toEqual([
+          'ts',
+          'id',
+          'v',
+          'sessionId',
+          'decision',
+          'agent',
+          'shape',
+          'level',
+          'toolName',
+          'command',
+          'segment',
+          'reason',
+          'ruleId',
+          'intent',
+          'cwd',
+        ]);
       });
     });
 
@@ -263,6 +294,36 @@ period, so default to 0 instead of hiding the Weekly block at fresh-period start
         expect(synced.hookSpecificOutput.permissionDecisionReason).toContain(
           '[project-rules/block-docker-system-prune] Use targeted cleanup instead.',
         );
+      });
+    });
+  });
+
+  describe('offline decisions', () => {
+    const originalFetch = globalThis.fetch;
+
+    afterEach(() => {
+      globalThis.fetch = originalFetch;
+    });
+
+    test('decides allowed and denied commands without any network access', async () => {
+      await withHookTestContext(async (context) => {
+        let fetchCalls = 0;
+        globalThis.fetch = (() => {
+          fetchCalls++;
+          throw new Error('hook decisions must remain offline');
+        }) as unknown as typeof fetch;
+
+        await expectNoHookOutput(
+          context.runClaudeCodeHook,
+          context.claudeCodeBashInput('git status'),
+        );
+        expect(
+          getHookDenyReason(
+            await context.runClaudeCodeHook(context.claudeCodeBashInput('git reset --hard')),
+            'claude-code',
+          ),
+        ).toContain('git reset --hard');
+        expect(fetchCalls).toBe(0);
       });
     });
   });

@@ -14,15 +14,17 @@ import { readBoundedHookInput } from '@/integrations/hook/common';
  * Read piped stdin content asynchronously, bounded by the hook input limit.
  * Returns null if stdin is a TTY (no piped input), empty, unreadable, or over the limit.
  */
-async function readStdinAsync(): Promise<string | null> {
-  if (process.stdin.isTTY) {
+type StatuslineInput = Parameters<typeof readBoundedHookInput>[0] & { isTTY?: boolean };
+
+async function readStdinAsync(input: StatuslineInput): Promise<string | null> {
+  if (input.isTTY) {
     return null;
   }
 
   // A statusline is decoration: oversized or unreadable input drops the prefix instead of
   // denying, unlike the fail-closed hook path that shares this reader.
-  const input = await readBoundedHookInput(process.stdin).catch(() => null);
-  return input?.trim() || null;
+  const content = await readBoundedHookInput(input).catch(() => null);
+  return content?.trim() || null;
 }
 
 function getSettingsPath(): string {
@@ -76,7 +78,7 @@ export function isPluginEnabled(): boolean {
   }
 }
 
-export async function printStatusline(): Promise<void> {
+export async function printStatusline(input: StatuslineInput = process.stdin): Promise<void> {
   const enabled = isPluginEnabled();
 
   // Build our status string
@@ -103,7 +105,7 @@ export async function printStatusline(): Promise<void> {
 
   // Check for piped stdin input and prepend with separator
   // Skip JSON input (Claude Code pipes status JSON that shouldn't be echoed)
-  const stdinInput = await readStdinAsync();
+  const stdinInput = await readStdinAsync(input);
   if (stdinInput && !stdinInput.startsWith('{')) {
     console.log(`${stdinInput} | ${status}`);
   } else {
